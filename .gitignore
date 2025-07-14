@@ -1,0 +1,12 @@
+*
+
+!.gitignore
+!Cargo.lock
+!Cargo.toml
+!.envrc
+!flake.lock
+!flake.nix
+!rust-toolchain.toml
+!README.md
+!/futures/
+!/futures/**
