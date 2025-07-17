@@ -5,6 +5,7 @@ use crate::{
 use std::mem;
 use std::{pin::Pin, sync::atomic::Ordering};
 use std::{sync::atomic::AtomicBool, task::Poll};
+
 /// from yoshuawuyts/futures-concurrency
 /// Wait for all futures to complete.
 ///
@@ -13,7 +14,7 @@ use std::{sync::atomic::AtomicBool, task::Poll};
 pub trait Join<'scope> {
     /// The resulting output type.
     type Output;
-    /// The [`Future`] implementation returned by this method.
+    /// The [`ScopedFuture`] implementation returned by this method.
     type Future: ScopedFuture<'scope, Output = Self::Output>;
     /// Waits for multiple futures to complete.
     ///
@@ -87,16 +88,21 @@ impl<'scope> Wake<'scope> for WakeStore<'scope> {
 }
 
 macro_rules! impl_join_tuple {
-    ($StructName:ident $($F:ident)+) => {
-        #[allow(non_snake_case)]
-        struct Wakers<'scope> {
-            $($F: WakeStore<'scope>,)*
+    ($namespace: ident $StructName:ident $($F:ident)+) => {
+
+        mod $namespace {
+            use super::WakeStore;
+
+            #[allow(non_snake_case)]
+            pub struct Wakers<'scope> {
+                $(pub $F: WakeStore<'scope>,)*
+            }
         }
 
         #[allow(non_snake_case)]
         pub struct $StructName<'scope, $($F: ScopedFuture<'scope>),+> {
             $($F: MaybeDone<'scope, $F>,)*
-            wakers: Wakers<'scope>,
+            wakers: $namespace::Wakers<'scope>,
         }
 
         impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> ScopedFuture<'scope>
@@ -113,6 +119,20 @@ macro_rules! impl_join_tuple {
 
                     if let MaybeDone::Future(fut) = &mut this.$F {
                         ready &= if this.wakers.$F.take_ready() {
+                            // # Safety
+                            //
+                            // mem::transmute is necessary to convert between
+                            // `&'poll dyn Wake<'scope>` and
+                            // `&'scope dyn Wake<'scope>`, where `'poll` is the
+                            // lifetime implicitly assigned to the `&mut self`
+                            // argument.
+                            //
+                            // This is safe because
+                            // - `Self: 'scope` (all data inside `Join` live
+                            // for at least `'scope`)
+                            // - `this.wakers.$F` is pinned
+                            // - mutation to `this.wakers.$F.parent` doesn't
+                            // violate the `&'scope dyn Wake`
                             unsafe {
                                 Pin::new_unchecked(fut).poll(
                                     mem::transmute::<&dyn Wake<'scope>, &'scope dyn Wake<'scope>>(
@@ -129,6 +149,17 @@ macro_rules! impl_join_tuple {
                 if ready {
                     Poll::Ready((
                         $(
+                            // # Safety
+                            //
+                            // All $Fs start as `MaybeDone::Future`.
+                            //
+                            // `ready == true` is only hit when we know every
+                            // future either just finished or previously
+                            // finished, meaning they are all
+                            // `MaybeDone::Done`.
+                            //
+                            // `MaybeDone::Done::take_output()` always returns
+                            // the owned output of the inner future.
                             unsafe {
                                 Pin::new_unchecked(&mut this.$F)
                                     .take_output()
@@ -152,11 +183,21 @@ macro_rules! impl_join_tuple {
 
                 $StructName {
                     $($F: maybe_done($F),)*
-                    wakers: Wakers { $($F: WakeStore::new(),)* },
+                    wakers: $namespace::Wakers { $($F: WakeStore::new(),)* },
                 }
             }
         }
     };
 }
 
-impl_join_tuple!(Join2 A B);
+impl_join_tuple!(join2 Join2 A B);
+impl_join_tuple!(join3 Join3 A B C);
+impl_join_tuple!(join4 Join4 A B C D);
+impl_join_tuple!(join5 Join5 A B C D E);
+impl_join_tuple!(join6 Join6 A B C D E F);
+impl_join_tuple!(join7 Join7 A B C D E F G);
+impl_join_tuple!(join8 Join8 A B C D E F G H);
+impl_join_tuple!(join9 Join9 A B C D E F G H I);
+impl_join_tuple!(join10 Join10 A B C D E F G H I J);
+impl_join_tuple!(join11 Join11 A B C D E F G H I J K);
+impl_join_tuple!(join12 Join12 A B C D E F G H I J K L);
