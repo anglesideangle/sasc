@@ -1,6 +1,6 @@
 //! Definition of the MaybeDone combinator
 
-use crate::future::{ScopedFuture, Wake};
+use futures_core::{ScopedFuture, Wake};
 
 use super::assert_future;
 use core::mem;

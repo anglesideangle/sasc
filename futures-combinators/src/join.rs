@@ -1,7 +1,5 @@
-use crate::{
-    future::{ScopedFuture, Wake},
-    utils::{MaybeDone, maybe_done},
-};
+use futures_core::{ScopedFuture, Wake};
+use futures_util::{MaybeDone, maybe_done};
 use std::mem;
 use std::{pin::Pin, sync::atomic::Ordering};
 use std::{sync::atomic::AtomicBool, task::Poll};
@@ -63,10 +61,12 @@ pub trait Join<'scope> {
     /// This function returns a new future which polls all futures concurrently.
     fn join(self) -> Self::Future;
 }
+
 struct WakeStore<'scope> {
     parent: Option<&'scope dyn Wake<'scope>>,
     ready: AtomicBool,
 }
+
 impl<'scope> WakeStore<'scope> {
     fn new() -> Self {
         Self {
@@ -78,6 +78,7 @@ impl<'scope> WakeStore<'scope> {
         self.ready.swap(false, Ordering::SeqCst)
     }
 }
+
 impl<'scope> Wake<'scope> for WakeStore<'scope> {
     fn wake(&self) {
         self.ready.swap(true, Ordering::SeqCst);

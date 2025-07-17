@@ -3,5 +3,20 @@
 version = 4
 
 [[package]]
-name = "futures"
+name = "futures-combinators"
 version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-core"
+version = "0.1.0"
+
+[[package]]
+name = "futures-util"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+]

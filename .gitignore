@@ -11,3 +11,5 @@
 !rustfmt.toml
 !/futures/
 !/futures/**
+!/futures-*/
+!/futures-*/**
