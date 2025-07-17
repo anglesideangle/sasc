@@ -21,7 +21,10 @@ pub enum MaybeDone<'scope, Fut: ScopedFuture<'scope>> {
     Gone,
 }
 
-impl<'scope, Fut: ScopedFuture<'scope> + Unpin> Unpin for MaybeDone<'scope, Fut> {}
+impl<'scope, Fut: ScopedFuture<'scope> + Unpin> Unpin
+    for MaybeDone<'scope, Fut>
+{
+}
 
 /// Wraps a future into a `MaybeDone`
 ///
@@ -41,7 +44,9 @@ impl<'scope, Fut: ScopedFuture<'scope> + Unpin> Unpin for MaybeDone<'scope, Fut>
 /// assert_eq!(future.as_mut().take_output(), None);
 /// # });
 /// ```
-pub fn maybe_done<'scope, Fut: ScopedFuture<'scope>>(future: Fut) -> MaybeDone<'scope, Fut> {
+pub fn maybe_done<'scope, Fut: ScopedFuture<'scope>>(
+    future: Fut,
+) -> MaybeDone<'scope, Fut> {
     assert_future::<(), _>(MaybeDone::Future(future))
 }
 
@@ -86,10 +91,15 @@ impl<'scope, Fut: ScopedFuture<'scope>> MaybeDone<'scope, Fut> {
 //     }
 // }
 
-impl<'scope, Fut: ScopedFuture<'scope>> ScopedFuture<'scope> for MaybeDone<'scope, Fut> {
+impl<'scope, Fut: ScopedFuture<'scope>> ScopedFuture<'scope>
+    for MaybeDone<'scope, Fut>
+{
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &'scope dyn Wake<'scope>) -> Poll<Self::Output>
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &'scope dyn Wake<'scope>,
+    ) -> Poll<Self::Output>
 // where
     //     'scope: 'react,
     {

@@ -2,8 +2,6 @@ mod combinators;
 mod future;
 mod utils;
 
-use std::{pin::Pin, task::Poll};
-
 /// from yoshuawuyts/futures-concurrency
 /// Wait for all futures to complete.
 ///

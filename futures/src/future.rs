@@ -52,5 +52,8 @@ pub trait Wake<'scope> {
 pub trait ScopedFuture<'scope> {
     type Output;
 
-    fn poll(self: Pin<&mut Self>, wake: &'scope dyn Wake<'scope>) -> Poll<Self::Output>;
+    fn poll(
+        self: Pin<&mut Self>,
+        wake: &'scope dyn Wake<'scope>,
+    ) -> Poll<Self::Output>;
 }

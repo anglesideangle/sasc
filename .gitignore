@@ -8,5 +8,6 @@
 !flake.nix
 !rust-toolchain.toml
 !README.md
+!rustfmt.toml
 !/futures/
 !/futures/**
