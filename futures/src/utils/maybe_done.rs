@@ -1,11 +1,11 @@
 //! Definition of the MaybeDone combinator
 
-use crate::future::{ScopedFuture, ScopedWake};
+use crate::future::{ScopedFuture, Wake};
 
 use super::assert_future;
 use core::mem;
 use core::pin::Pin;
-use std::task::Poll;
+use std::task::{Poll, ready};
 
 /// A future that may have completed.
 ///
@@ -89,7 +89,10 @@ impl<'scope, Fut: ScopedFuture<'scope>> MaybeDone<'scope, Fut> {
 impl<'scope, Fut: ScopedFuture<'scope>> ScopedFuture<'scope> for MaybeDone<'scope, Fut> {
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &'scope mut dyn ScopedWake) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &'scope dyn Wake<'scope>) -> Poll<Self::Output>
+// where
+    //     'scope: 'react,
+    {
         unsafe {
             match self.as_mut().get_unchecked_mut() {
                 Self::Future(f) => {

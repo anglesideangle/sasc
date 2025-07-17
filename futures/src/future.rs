@@ -4,7 +4,9 @@ use std::{pin::Pin, task::Poll};
 ///
 /// This acts as a handle for a reactor to indicate when a `ScopedFuture` is
 /// once again ready to be polled.
-pub type Wake<'scope> = &'scope dyn FnMut() -> ();
+pub trait Wake<'scope> {
+    fn wake(&self);
+}
 
 /// ScopedFuture represents a unit of asynchronous computation that must be
 /// polled by an external actor.
@@ -42,12 +44,13 @@ pub type Wake<'scope> = &'scope dyn FnMut() -> ();
 /// If waker is ownable/cloneable, that erases the lifetime's importance.
 /// If the waker is a non clonable mutable reference that lives for 'scope,
 /// it cannot be passed into `poll` every time the future is polled, instead it
-/// must only be registered once.
+/// must only be registered once, leading to a register_waker api that is very
+/// cumbersome without unsafe poll/unsafe register_waker. Instead, it's easier
+/// to use a non clonable immutable reference and have waking occur via
+/// interior mutability (this is fine since combinators rely on interior
+/// mutability anyway for a 1 parent : many children waker relationship)
 pub trait ScopedFuture<'scope> {
     type Output;
 
-    // these could be made unsafe to guarantee polling to completion?
-    fn register_wake(self: Pin<&mut Self>, wake: Wake<'scope>);
-
-    fn poll(self: Pin<&mut Self>) -> Poll<Self::Output>;
+    fn poll(self: Pin<&mut Self>, wake: &'scope dyn Wake<'scope>) -> Poll<Self::Output>;
 }

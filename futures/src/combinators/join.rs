@@ -2,8 +2,9 @@ use crate::{
     future::{ScopedFuture, Wake},
     utils::{MaybeDone, maybe_done},
 };
-use std::pin::Pin;
-use std::task::Poll;
+use std::mem;
+use std::{pin::Pin, sync::atomic::Ordering};
+use std::{sync::atomic::AtomicBool, task::Poll};
 
 /// from yoshuawuyts/futures-concurrency
 /// Wait for all futures to complete.
@@ -69,55 +70,72 @@ pub trait Join<'scope> {
 // https://github.com/yoshuawuyts/futures-concurrency/blob/main/src/utils/wakers/array/waker.rs
 // possibly copy large portions of futures-concurrency over here
 
-/// implements unsafe logic for a set of wakers waking one waker
-pub struct WakerArray<'scope, const N: usize> {
-    parent_waker: Option<Wake<'scope>>,
-    // TODO bit packing
-    child_readiness: [bool; N],
-    child_wakers: [Wake<'scope>; N],
-}
+// struct Waker<'scope> {
+//     parent_waker: Wake<'scope>,
+// }
 
-impl<'scope, const N: usize> WakerArray<'scope, N> {
-    fn new() -> Self {
-        // let mut this = Self {
-        //     parent_waker: None,
-        //     child_readiness: [false; N],
-        //     child_wakers: [|| {}; N],
-        // };
-        // this.child_wakers = [|x| 2 * x; N];
-        // this
-    }
-}
+// impl<'scope> Waker<'scope> {
+//     fn wake(&mut self) {
+//         (*self.parent_waker)();
+//     }
+// }
+
+// /// implements unsafe logic for a set of wakers waking one waker
+// pub struct WakerArray<'scope, const N: usize> {
+//     parent_waker: Option<&'scope dyn Wake<'scope>>,
+//     // TODO bit packing
+//     child_readiness: [bool; N],
+//     pub child_wakers: Option<[Waker<'scope>; N]>,
+// }
+
+// impl<'scope, const N: usize> WakerArray<'scope, N> {
+//     fn new() -> Self {
+//         Self {
+//             parent_waker: None,
+//             child_readiness: [false; N],
+//             child_wakers: None,
+//         }
+//     }
+
+// fn register_parent_wake(&mut self, wake: Wake<'scope>) {
+//     self.parent_waker = Some(wake);
+//     self.child_wakers = Some(
+//         [Waker {
+//             parent_waker: &self.parent_waker,
+//         }; N],
+//     );
+// }
+// }
 
 // would be rly nice if rust had java functional interfaces for wake(&mut Self)
 
-// TODO bit packing
 struct WakeStore<'scope> {
-    ready: bool,
-    parent: Wake<'scope>,
+    // no extra storage bc None is 0x000 ptr
+    parent: Option<&'scope dyn Wake<'scope>>,
+    ready: AtomicBool,
 }
 
 impl<'scope> WakeStore<'scope> {
-    fn new(parent: Wake<'scope>) -> Self {
+    fn new() -> Self {
         Self {
-            parent,
-            ready: true,
+            parent: Option::None,
+            ready: true.into(),
         }
     }
 
     fn take_ready(&mut self) -> bool {
-        let out = self.ready;
-        self.ready = false;
-        out
+        self.ready.swap(false, Ordering::SeqCst)
     }
 }
 
-// impl ScopedWake for WakeStore<'_> {
-//     fn wake(&mut self) {
-//         self.ready = true;
-//         self.parent.wake();
-//     }
-// }
+impl<'scope> Wake<'scope> for WakeStore<'scope> {
+    fn wake(&self) {
+        self.ready.swap(true, Ordering::SeqCst);
+        if let Some(parent) = self.parent {
+            parent.wake();
+        }
+    }
+}
 
 // heavily based on https://github.com/yoshuawuyts/futures-concurrency
 macro_rules! impl_join_tuple {
@@ -128,37 +146,35 @@ macro_rules! impl_join_tuple {
         // future_$F and waker_$F
         #[allow(non_snake_case)]
         struct Wakers<'scope> {
+            // inefficient, needs tt muncher for actual [T; LEN] traversal, fewer cache misses
             $($F: WakeStore<'scope>,)*
         }
 
         #[allow(non_snake_case)]
         pub struct $StructName<'scope, $($F: ScopedFuture<'scope>),+> {
-            parent_waker: Option<Wake<'scope>>,
+            // parent_waker: Option<&'scope dyn Wake>,
             $($F: MaybeDone<'scope, $F>,)*
             wakers: Wakers<'scope>,
         }
 
-        impl<'scope, $($F: ScopedFuture<'scope>),+> ScopedFuture<'scope> for $StructName<'scope, $($F),+> {
+        impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> ScopedFuture<'scope> for $StructName<'scope, $($F),+>
+        {
             type Output = ($($F::Output),+);
 
-            fn register_wake(self: Pin<&mut Self>, waker: Wake<'scope>) {
-                unsafe { self.get_unchecked_mut() }.parent_waker = Some(waker);
-            }
-
-            fn poll(self: Pin<&mut Self>) -> Poll<Self::Output> {
+            fn poll(self: Pin<&mut Self>, wake: &'scope dyn Wake<'scope>) -> Poll<Self::Output>
+            {
                 let this = unsafe { self.get_unchecked_mut() };
 
                 let mut ready = true;
 
-                // "loop" through all ready futures, poll if ready
-                //
-                // this combinator is complete when all internal futures have
-                // polled to completion
                 $(
-                    // let $F = unsafe { &mut self.map_unchecked_mut(|f| &mut f.$F) };
+                    this.wakers.$F.parent = Some(wake);
+
                     if let MaybeDone::Future(fut) = &mut this.$F {
                         ready &= if this.wakers.$F.take_ready() {
-                            unsafe { Pin::new_unchecked(fut) }.poll().is_ready()
+                            unsafe {
+                                Pin::new_unchecked(fut).poll(mem::transmute(&this.wakers.$F as &dyn Wake)).is_ready()
+                            }
                         } else {
                             false
                         };
@@ -167,11 +183,11 @@ macro_rules! impl_join_tuple {
 
                 if ready {
                     Poll::Ready(($(
-                     // unwrap_unchecked is safe here because we know all
-                     // futures have been polled to completion
-                     // (`MaybeDone::Done`) and have never been converted
-                     // to `MaybeDone::Gone`
-                     unsafe { Pin::new_unchecked(&mut this.$F).take_output().unwrap_unchecked() },
+                        // unwrap_unchecked is safe here because we know all
+                        // futures have been polled to completion
+                        // (`MaybeDone::Done`) and have never been converted
+                        // to `MaybeDone::Gone`
+                        unsafe { Pin::new_unchecked(&mut this.$F).take_output().unwrap_unchecked() },
                     )*))
                 } else {
                     Poll::Pending
@@ -180,28 +196,18 @@ macro_rules! impl_join_tuple {
             }
         }
 
-        // impl<'scope, $($F: ScopedFuture<'scope>),+> Wake<'scope> for $StructName<'scope, $($F),+> {
-        //     fn wake(&mut self) {
-        //         if let Some(waker) = &mut self.parent_waker {
-        //             waker.wake();
-        //         };
-        //     }
-        // }
-
-        impl<'scope, $($F: ScopedFuture<'scope>),+> Join<'scope> for ($($F),+) {
+        impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> Join<'scope> for ($($F),+) {
             type Output = ($($F::Output),*);
             type Future = $StructName<'scope, $($F),+>;
 
             #[allow(non_snake_case)]
             fn join(self) -> Self::Future {
                 let ($($F),+): ($($F),+) = self;
-                // $StructName {
-                //     parent_waker: Option::None,
-                //     $($F: maybe_done($F),)*
-                //     wakers: $(Wakers { $F: WakeStore::new(&mut Self) }),*
-                // }
-                todo!()
-                // TODO register all wakers
+                $StructName {
+                    // parent_waker: Option::None,
+                    $($F: maybe_done($F),)*
+                    wakers: Wakers { $($F: WakeStore::new(),)* }
+                }
             }
         }
     };
