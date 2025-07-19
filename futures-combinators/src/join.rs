@@ -1,6 +1,6 @@
 use futures_core::{ScopedFuture, Wake};
 use futures_util::{MaybeDone, MaybeDoneState, maybe_done};
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::sync::atomic::Ordering;
 use std::{sync::atomic::AtomicBool, task::Poll};
 
@@ -63,7 +63,7 @@ pub trait Join<'scope> {
 }
 
 struct WakeStore<'scope> {
-    parent: UnsafeCell<Option<&'scope dyn Wake<'scope>>>,
+    parent: Cell<Option<&'scope dyn Wake<'scope>>>,
     ready: AtomicBool,
 }
 
@@ -82,7 +82,7 @@ impl<'scope> WakeStore<'scope> {
 impl<'scope> Wake<'scope> for WakeStore<'scope> {
     fn wake(&self) {
         self.ready.swap(true, Ordering::SeqCst);
-        if let Some(parent) = unsafe { &*self.parent.get() } {
+        if let Some(parent) = &self.parent.get() {
             parent.wake();
         }
     }
@@ -102,7 +102,7 @@ macro_rules! impl_join_tuple {
             // this is so stupid
             #[allow(non_snake_case)]
             pub struct WakerRefs<'scope> {
-                $(pub $F: UnsafeCell<Option<&'scope dyn Wake<'scope>>>,)*
+                $(pub $F: Cell<Option<&'scope dyn Wake<'scope>>>,)*
             }
         }
 
@@ -122,13 +122,20 @@ macro_rules! impl_join_tuple {
                 let mut ready = true;
 
                 $(
-                    unsafe { self.wakers.$F.parent.get().replace(Some(wake)) };
-                    unsafe { self.refs.$F.get().replace(Some(&self.wakers.$F)) };
+                    self.wakers.$F.parent.replace(Some(wake)) ;
+                    self.refs.$F.replace(Some(&self.wakers.$F));
 
+                    // # SAFETY
+                    // `fut` MUST NOT LIVE PAST THIS BLOCK
+                    // OTHER MaybeDone METHODS MUTATE `self` AND `fut` HOLDS
+                    // IMMUTABLE REFERENCE INVARIANT
                     if let MaybeDoneState::Future(fut) = unsafe { self.$F.get_state() } {
                         ready &= if self.wakers.$F.take_ready() {
                             // by polling the future, we create our self referentials truct for lifetime 'scope
-                            fut.poll(unsafe { (&*self.refs.$F.get()).unwrap_unchecked() }).is_ready()
+                            // # SAFETY
+                            // unwrap_unchecked is safe because we just put a Some value into our refs.$F
+                            // so it is guaranteed to be Some
+                            fut.poll(unsafe { (&self.refs.$F.get()).unwrap_unchecked() }).is_ready()
                         } else {
                             false
                         };
@@ -138,6 +145,9 @@ macro_rules! impl_join_tuple {
                 if ready {
                     Poll::Ready((
                         $(
+                            // # SAFETY
+                            // `ready == true` when all futures are already
+                            // complete or just complete. Once not `MaybeDoneState::Future`, futures transition to `MaybeDoneState::Done`. We don't poll them after, or take their outputs so we know the result of `take_output` must be `Some`
                             unsafe {
                                 self.$F
                                     .take_output()

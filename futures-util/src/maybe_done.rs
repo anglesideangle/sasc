@@ -3,11 +3,8 @@
 use futures_core::{ScopedFuture, Wake};
 
 use super::assert_future;
-use core::mem;
-use core::pin::Pin;
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
-    ptr,
+    cell::UnsafeCell,
     task::{Poll, ready},
 };
 
