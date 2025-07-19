@@ -1,10 +1,8 @@
 use futures_core::{ScopedFuture, Wake};
 use futures_util::{MaybeDone, MaybeDoneState, maybe_done};
-use std::cell::{Cell, UnsafeCell};
-use std::sync::atomic::Ordering;
-use std::{sync::atomic::AtomicBool, task::Poll};
+use std::{cell::Cell, task::Poll};
 
-/// from yoshuawuyts/futures-concurrency
+/// from [futures-concurrency](https://github.com/yoshuawuyts/futures-concurrency/tree/main)
 /// Wait for all futures to complete.
 ///
 /// Awaits multiple futures simultaneously, returning the output of the futures
@@ -12,59 +10,22 @@ use std::{sync::atomic::AtomicBool, task::Poll};
 pub trait Join<'scope> {
     /// The resulting output type.
     type Output;
+
     /// The [`ScopedFuture`] implementation returned by this method.
     type Future: ScopedFuture<'scope, Output = Self::Output>;
+
     /// Waits for multiple futures to complete.
     ///
     /// Awaits multiple futures simultaneously, returning the output of the futures
     /// in the same container type they we're created once all complete.
     ///
-    /// # Examples
-    ///
-    /// Awaiting multiple futures of the same type can be done using either a vector
-    /// or an array.
-    /// ```rust
-    /// #  futures::executor::block_on(async {
-    /// use futures_concurrency::prelude::*;
-    ///
-    /// // all futures passed here are of the same type
-    /// let fut1 = core::future::ready(1);
-    /// let fut2 = core::future::ready(2);
-    /// let fut3 = core::future::ready(3);
-    ///
-    /// let outputs = [fut1, fut2, fut3].join().await;
-    /// assert_eq!(outputs, [1, 2, 3]);
-    /// # })
-    /// ```
-    ///
-    /// In practice however, it's common to want to await multiple futures of
-    /// different types. For example if you have two different `async {}` blocks,
-    /// you want to `.await`. To do that, you can call `.join` on tuples of futures.
-    /// ```rust
-    /// #  futures::executor::block_on(async {
-    /// use futures_concurrency::prelude::*;
-    ///
-    /// async fn some_async_fn() -> usize { 3 }
-    ///
-    /// // the futures passed here are of different types
-    /// let fut1 = core::future::ready(1);
-    /// let fut2 = async { 2 };
-    /// let fut3 = some_async_fn();
-    /// //                       ^ NOTE: no `.await` here!
-    ///
-    /// let outputs = (fut1, fut2, fut3).join().await;
-    /// assert_eq!(outputs, (1, 2, 3));
-    /// # })
-    /// ```
-    ///
-    /// <br><br>
     /// This function returns a new future which polls all futures concurrently.
     fn join(self) -> Self::Future;
 }
 
 struct WakeStore<'scope> {
     parent: Cell<Option<&'scope dyn Wake<'scope>>>,
-    ready: AtomicBool,
+    ready: Cell<bool>,
 }
 
 impl<'scope> WakeStore<'scope> {
@@ -75,13 +36,13 @@ impl<'scope> WakeStore<'scope> {
         }
     }
     fn take_ready(&self) -> bool {
-        self.ready.swap(false, Ordering::SeqCst)
+        self.ready.replace(false)
     }
 }
 
 impl<'scope> Wake<'scope> for WakeStore<'scope> {
     fn wake(&self) {
-        self.ready.swap(true, Ordering::SeqCst);
+        self.ready.replace(true);
         if let Some(parent) = &self.parent.get() {
             parent.wake();
         }
@@ -107,6 +68,7 @@ macro_rules! impl_join_tuple {
         }
 
         #[allow(non_snake_case)]
+        #[must_use = "futures do nothing unless you `.await` or poll them"]
         pub struct $StructName<'scope, $($F: ScopedFuture<'scope>),+> {
             $($F: MaybeDone<'scope, $F>,)*
             wakers: $namespace::Wakers<'scope>,
@@ -190,3 +152,18 @@ impl_join_tuple!(join9 Join9 A B C D E F G H I);
 impl_join_tuple!(join10 Join10 A B C D E F G H I J);
 impl_join_tuple!(join11 Join11 A B C D E F G H I J K);
 impl_join_tuple!(join12 Join12 A B C D E F G H I J K L);
+
+#[cfg(test)]
+mod tests {
+    use futures_util::poll_fn;
+
+    use super::*;
+
+    #[test]
+    fn basic() {
+        let f1 = poll_fn(|_| Poll::Ready(1));
+        let f2 = poll_fn(|_| Poll::Ready(2));
+        let dummy_waker = WakeStore::new();
+        assert_eq!((f1, f2).join().poll(&dummy_waker), Poll::Ready((1, 2)));
+    }
+}

@@ -8,6 +8,7 @@ use std::{
     task::{Poll, ready},
 };
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct MaybeDone<'scope, Fut: ScopedFuture<'scope>> {
     state: UnsafeCell<MaybeDoneState<'scope, Fut>>,
 }
