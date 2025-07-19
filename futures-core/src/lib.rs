@@ -1,4 +1,4 @@
-use std::{pin::Pin, task::Poll};
+use std::task::Poll;
 
 /// A task that can be woken.
 ///
@@ -42,8 +42,10 @@ pub trait Wake<'scope> {
 pub trait ScopedFuture<'scope> {
     type Output;
 
+    /// as soon as poll is called, the struct becomes self-referential,
+    /// effectively pinned until dropped (or forgotten....D; )
     fn poll(
-        self: Pin<&mut Self>,
+        self: &'scope Self,
         wake: &'scope dyn Wake<'scope>,
     ) -> Poll<Self::Output>;
 }

@@ -93,3 +93,51 @@ New async primitives that disallow intra-task concurrency, clone of `futures` an
 - [ ] rfc?
 
 channels: need lifetimed receievers, probably needs `Forget` (arc-like channels would be unsafe)
+
+# Chapter 2:
+
+I am actually addicted to rewriting async rust at this point I need a new hobby
+
+why ch 1 failed:
+
+discussed in [waker allocation problem](https://blog.yoshuawuyts.com/the-waker-allocation-problem/) from earlier: Futures are self referential
+- i somehow did not realize this
+
+If you have `Task<'scope>`, which contains `Future<'scope>'` and `Waker<'scope>'`, where `Future::poll(wake: &'scope dyn Wake)`, there needs to be `&'scope` references to owned wakers inside `Task` being passed to owned futures (also in `Task`). This is useful because it prevents reactors (anything that registers a `&'scope dyn Wake`) from outliving the future/task containing them, preventing dangling pointers without `Arc`/alloc.
+However, it also is self referential:
+- `Task<'scope>` means your task must live `<= 'scope`
+- `Task { FutureImpl { Reactor { &'scope dyn Wake} } }` (the task must store a reactor at some point) means the task must live for `>= 'scope`
+
+This is fine, actually! Rust [does](https://sabrinajewson.org/blog/null-lifetime) allow self referential structs*.
+The catch is that, as you may have guessed, the task must live for exactly `'scope`. Since it has an immutable reference to parts of itself, and immutable references are disallowed from moving while they are held, the task may not move after the self-reference has been established.
+
+This usually makes self referential structs useless, but... not necessarily in this case
+
+```rust
+// suppose rustc generated impls for ScopedFuture
+async fn example() {
+  let f1 = my_future(1);
+  let f2 = my_future(2);
+  join!(f1, f2) // all async combinators would need to be macros that create self reference in-place
+  // actually this would also work because it isn't being polled
+}
+```
+
+```rust
+// suppose rustc generated impls for ScopedFuture
+async fn example() {
+  let f1 = my_future(1);
+  let f2 = my_future(2);
+  join!(f1, f2).await; // no futures passed around, used in place!
+  // compiles fine!!
+}
+```
+
+Cool properties:
+- no `Pin`, since the compiler guarantees the future will not move due to self reference for entire lifetime of 'scope
+- no unsafe code(?) - no pins
+
+Tradeoffs:
+- need tons of interior mutability, since immutable/can't move means `poll` cannot take `&mut self`, cells everywhere
+  - nvm lots of unsafe code, but nothing really unsound
+- potentially bad error messages? stuff like `join!` will have to output code that manually sets up the waker self ref

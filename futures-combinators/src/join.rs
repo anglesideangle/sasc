@@ -1,7 +1,7 @@
 use futures_core::{ScopedFuture, Wake};
-use futures_util::{MaybeDone, maybe_done};
-use std::mem;
-use std::{pin::Pin, sync::atomic::Ordering};
+use futures_util::{MaybeDone, MaybeDoneState, maybe_done};
+use std::cell::UnsafeCell;
+use std::sync::atomic::Ordering;
 use std::{sync::atomic::AtomicBool, task::Poll};
 
 /// from yoshuawuyts/futures-concurrency
@@ -63,18 +63,18 @@ pub trait Join<'scope> {
 }
 
 struct WakeStore<'scope> {
-    parent: Option<&'scope dyn Wake<'scope>>,
+    parent: UnsafeCell<Option<&'scope dyn Wake<'scope>>>,
     ready: AtomicBool,
 }
 
 impl<'scope> WakeStore<'scope> {
     fn new() -> Self {
         Self {
-            parent: Option::None,
+            parent: Option::None.into(),
             ready: true.into(),
         }
     }
-    fn take_ready(&mut self) -> bool {
+    fn take_ready(&self) -> bool {
         self.ready.swap(false, Ordering::SeqCst)
     }
 }
@@ -82,7 +82,7 @@ impl<'scope> WakeStore<'scope> {
 impl<'scope> Wake<'scope> for WakeStore<'scope> {
     fn wake(&self) {
         self.ready.swap(true, Ordering::SeqCst);
-        if let Some(parent) = self.parent {
+        if let Some(parent) = unsafe { &*self.parent.get() } {
             parent.wake();
         }
     }
@@ -92,11 +92,17 @@ macro_rules! impl_join_tuple {
     ($namespace: ident $StructName:ident $($F:ident)+) => {
 
         mod $namespace {
-            use super::WakeStore;
+            use super::*;
 
             #[allow(non_snake_case)]
             pub struct Wakers<'scope> {
                 $(pub $F: WakeStore<'scope>,)*
+            }
+
+            // this is so stupid
+            #[allow(non_snake_case)]
+            pub struct WakerRefs<'scope> {
+                $(pub $F: UnsafeCell<Option<&'scope dyn Wake<'scope>>>,)*
             }
         }
 
@@ -104,6 +110,7 @@ macro_rules! impl_join_tuple {
         pub struct $StructName<'scope, $($F: ScopedFuture<'scope>),+> {
             $($F: MaybeDone<'scope, $F>,)*
             wakers: $namespace::Wakers<'scope>,
+            refs: $namespace::WakerRefs<'scope>,
         }
 
         impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> ScopedFuture<'scope>
@@ -111,36 +118,17 @@ macro_rules! impl_join_tuple {
         {
             type Output = ($($F::Output),+);
 
-            fn poll(self: Pin<&mut Self>, wake: &'scope dyn Wake<'scope>) -> Poll<Self::Output> {
-                let this = unsafe { self.get_unchecked_mut() };
+            fn poll(&'scope self, wake: &'scope dyn Wake<'scope>) -> Poll<Self::Output> {
                 let mut ready = true;
 
                 $(
-                    this.wakers.$F.parent = Some(wake);
+                    unsafe { self.wakers.$F.parent.get().replace(Some(wake)) };
+                    unsafe { self.refs.$F.get().replace(Some(&self.wakers.$F)) };
 
-                    if let MaybeDone::Future(fut) = &mut this.$F {
-                        ready &= if this.wakers.$F.take_ready() {
-                            // # Safety
-                            //
-                            // mem::transmute is necessary to convert between
-                            // `&'poll dyn Wake<'scope>` and
-                            // `&'scope dyn Wake<'scope>`, where `'poll` is the
-                            // lifetime implicitly assigned to the `&mut self`
-                            // argument.
-                            //
-                            // This is safe because
-                            // - `Self: 'scope` (all data inside `Join` live
-                            // for at least `'scope`)
-                            // - `this.wakers.$F` is pinned
-                            // - mutation to `this.wakers.$F.parent` doesn't
-                            // violate the `&'scope dyn Wake`
-                            unsafe {
-                                Pin::new_unchecked(fut).poll(
-                                    mem::transmute::<&dyn Wake<'scope>, &'scope dyn Wake<'scope>>(
-                                        &this.wakers.$F
-                                    )
-                                ).is_ready()
-                            }
+                    if let MaybeDoneState::Future(fut) = unsafe { self.$F.get_state() } {
+                        ready &= if self.wakers.$F.take_ready() {
+                            // by polling the future, we create our self referentials truct for lifetime 'scope
+                            fut.poll(unsafe { (&*self.refs.$F.get()).unwrap_unchecked() }).is_ready()
                         } else {
                             false
                         };
@@ -150,19 +138,8 @@ macro_rules! impl_join_tuple {
                 if ready {
                     Poll::Ready((
                         $(
-                            // # Safety
-                            //
-                            // All $Fs start as `MaybeDone::Future`.
-                            //
-                            // `ready == true` is only hit when we know every
-                            // future either just finished or previously
-                            // finished, meaning they are all
-                            // `MaybeDone::Done`.
-                            //
-                            // `MaybeDone::Done::take_output()` always returns
-                            // the owned output of the inner future.
                             unsafe {
-                                Pin::new_unchecked(&mut this.$F)
+                                self.$F
                                     .take_output()
                                     .unwrap_unchecked()
                             },
@@ -185,6 +162,7 @@ macro_rules! impl_join_tuple {
                 $StructName {
                     $($F: maybe_done($F),)*
                     wakers: $namespace::Wakers { $($F: WakeStore::new(),)* },
+                    refs: $namespace::WakerRefs { $($F: Option::None.into(),)* }
                 }
             }
         }
