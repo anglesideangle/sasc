@@ -1,5 +1,6 @@
 use futures_core::{ScopedFuture, Wake};
-use futures_util::{MaybeDone, MaybeDoneState, maybe_done};
+use futures_util::WakeStore;
+use futures_util::{MaybeDone, maybe_done};
 use std::{cell::Cell, task::Poll};
 
 /// from [futures-concurrency](https://github.com/yoshuawuyts/futures-concurrency/tree/main)
@@ -21,32 +22,6 @@ pub trait Join<'scope> {
     ///
     /// This function returns a new future which polls all futures concurrently.
     fn join(self) -> Self::Future;
-}
-
-struct WakeStore<'scope> {
-    parent: Cell<Option<&'scope dyn Wake<'scope>>>,
-    ready: Cell<bool>,
-}
-
-impl<'scope> WakeStore<'scope> {
-    fn new() -> Self {
-        Self {
-            parent: Option::None.into(),
-            ready: true.into(),
-        }
-    }
-    fn take_ready(&self) -> bool {
-        self.ready.replace(false)
-    }
-}
-
-impl<'scope> Wake<'scope> for WakeStore<'scope> {
-    fn wake(&self) {
-        self.ready.replace(true);
-        if let Some(parent) = &self.parent.get() {
-            parent.wake();
-        }
-    }
 }
 
 macro_rules! impl_join_tuple {
@@ -84,20 +59,16 @@ macro_rules! impl_join_tuple {
                 let mut ready = true;
 
                 $(
-                    self.wakers.$F.parent.replace(Some(wake)) ;
+                    self.wakers.$F.set_parent(wake) ;
                     self.refs.$F.replace(Some(&self.wakers.$F));
 
-                    // # SAFETY
-                    // `fut` MUST NOT LIVE PAST THIS BLOCK
-                    // OTHER MaybeDone METHODS MUTATE `self` AND `fut` HOLDS
-                    // IMMUTABLE REFERENCE INVARIANT
-                    if let MaybeDoneState::Future(fut) = unsafe { self.$F.get_state() } {
+                    if !self.$F.is_done() {
                         ready &= if self.wakers.$F.take_ready() {
                             // by polling the future, we create our self referentials truct for lifetime 'scope
                             // # SAFETY
                             // unwrap_unchecked is safe because we just put a Some value into our refs.$F
                             // so it is guaranteed to be Some
-                            fut.poll(unsafe { (&self.refs.$F.get()).unwrap_unchecked() }).is_ready()
+                            self.$F.poll(unsafe { (&self.refs.$F.get()).unwrap_unchecked() }).is_ready()
                         } else {
                             false
                         };
@@ -155,15 +126,58 @@ impl_join_tuple!(join12 Join12 A B C D E F G H I J K L);
 
 #[cfg(test)]
 mod tests {
-    use futures_util::poll_fn;
+    #![no_std]
+
+    use futures_util::{noop_wake, poll_fn};
 
     use super::*;
+
+    #[test]
+    fn counters() {
+        let x1 = Cell::new(0);
+        let x2 = Cell::new(0);
+        let f1 = poll_fn(|wake| {
+            wake.wake();
+            x1.set(x1.get() + 1);
+            if x1.get() == 4 {
+                Poll::Ready(x1.get())
+            } else {
+                Poll::Pending
+            }
+        });
+        let f2 = poll_fn(|wake| {
+            wake.wake();
+            x2.set(x2.get() + 1);
+            if x2.get() == 5 {
+                Poll::Ready(x2.get())
+            } else {
+                Poll::Pending
+            }
+        });
+        let dummy_waker = noop_wake();
+        let join = (f1, f2).join();
+        for _ in 0..4 {
+            assert_eq!(join.poll(&dummy_waker), Poll::Pending);
+        }
+        assert_eq!(join.poll(&dummy_waker), Poll::Ready((4, 5)));
+    }
+
+    #[test]
+    fn never_wake() {
+        let f1 = poll_fn(|_| Poll::<i32>::Pending);
+        let f2 = poll_fn(|_| Poll::<i32>::Pending);
+        let dummy_waker = noop_wake();
+        let join = (f1, f2).join();
+        for _ in 0..10 {
+            assert_eq!(join.poll(&dummy_waker), Poll::Pending);
+        }
+    }
 
     #[test]
     fn basic() {
         let f1 = poll_fn(|_| Poll::Ready(1));
         let f2 = poll_fn(|_| Poll::Ready(2));
-        let dummy_waker = WakeStore::new();
+        let dummy_waker = noop_wake();
         assert_eq!((f1, f2).join().poll(&dummy_waker), Poll::Ready((1, 2)));
     }
 }

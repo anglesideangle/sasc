@@ -29,22 +29,7 @@ pub enum MaybeDoneState<'scope, Fut: ScopedFuture<'scope>> {
 
 /// Wraps a future into a `MaybeDone`
 ///
-/// # Examples
 ///
-/// ```
-/// # futures::executor::block_on(async {
-/// use core::pin::pin;
-///
-/// use futures::future;
-///
-/// let future = future::maybe_done(async { 5 });
-/// let mut future = pin!(future);
-/// assert_eq!(future.as_mut().take_output(), None);
-/// let () = future.as_mut().await;
-/// assert_eq!(future.as_mut().take_output(), Some(5));
-/// assert_eq!(future.as_mut().take_output(), None);
-/// # });
-/// ```
 pub fn maybe_done<'scope, Fut: ScopedFuture<'scope>>(
     future: Fut,
 ) -> MaybeDone<'scope, Fut> {
@@ -75,6 +60,13 @@ impl<'scope, Fut: ScopedFuture<'scope>> MaybeDone<'scope, Fut> {
     pub unsafe fn get_state(&self) -> &MaybeDoneState<'scope, Fut> {
         unsafe { &*self.state.get() }
     }
+
+    pub fn is_done(&self) -> bool {
+        match unsafe { &*self.state.get() } {
+            MaybeDoneState::Future(_) => false,
+            MaybeDoneState::Done(_) | MaybeDoneState::Gone => true,
+        }
+    }
 }
 
 impl<'scope, Fut: ScopedFuture<'scope>> ScopedFuture<'scope>
@@ -95,5 +87,61 @@ impl<'scope, Fut: ScopedFuture<'scope>> ScopedFuture<'scope>
             }
         }
         Poll::Ready(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use crate::poll_fn;
+
+    use crate::noop_wake;
+
+    use super::*;
+
+    #[test]
+    fn immediate_return() {
+        let immediate = poll_fn(|_| Poll::Ready(1));
+        let future = maybe_done(immediate);
+        let wake = noop_wake();
+        match unsafe { future.get_state() } {
+            MaybeDoneState::Future(_) => {}
+            MaybeDoneState::Done(_) | MaybeDoneState::Gone => {
+                panic!("should be MaybeDoneState::Future")
+            }
+        }
+        assert_eq!(future.poll(&wake), Poll::Ready(()));
+        match unsafe { future.get_state() } {
+            MaybeDoneState::Done(_) => {}
+            MaybeDoneState::Future(_) | MaybeDoneState::Gone => {
+                panic!("should be MaybeDoneState::Done")
+            }
+        }
+        assert_eq!(future.take_output(), Some(1));
+        assert_eq!(future.take_output(), None);
+    }
+
+    #[test]
+    fn normal() {
+        let x = Cell::new(0);
+        let poll = poll_fn(|wake| {
+            wake.wake();
+            x.set(x.get() + 1);
+            if x.get() == 4 {
+                Poll::Ready(x.get())
+            } else {
+                Poll::Pending
+            }
+        });
+        let future = maybe_done(poll);
+        let noop = noop_wake();
+        for _ in 0..3 {
+            assert_eq!(future.poll(&noop), Poll::Pending);
+            assert_eq!(future.take_output(), None);
+        }
+        assert_eq!(future.poll(&noop), Poll::Ready(()));
+        assert_eq!(future.poll(&noop), Poll::Ready(()));
+        assert_eq!(future.take_output(), Some(4));
     }
 }

@@ -14,22 +14,6 @@ pub struct PollFn<F> {
 /// Creates a new future wrapping around a function returning [`Poll`].
 ///
 /// Polling the returned future delegates to the wrapped function.
-///
-/// # Examples
-///
-/// ```
-/// # futures::executor::block_on(async {
-/// use futures::future::poll_fn;
-/// use futures::task::{Context, Poll};
-///
-/// fn read_line(_cx: &mut Context<'_>) -> Poll<String> {
-///     Poll::Ready("Hello, World!".into())
-/// }
-///
-/// let read_future = poll_fn(read_line);
-/// assert_eq!(read_future.await, "Hello, World!".to_owned());
-/// # });
-/// ```
 pub fn poll_fn<'scope, T, F>(f: F) -> PollFn<F>
 where
     F: Fn(&'scope dyn Wake) -> Poll<T>,
