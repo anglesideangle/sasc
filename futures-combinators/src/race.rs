@@ -3,10 +3,10 @@ use futures_util::WakeStore;
 use std::{cell::Cell, task::Poll};
 
 /// from [futures-concurrency](https://github.com/yoshuawuyts/futures-concurrency/tree/main)
-/// Wait for all futures to complete.
+/// Wait for the first future to complete.
 ///
-/// Awaits multiple futures simultaneously, returning the output of the futures
-/// in the same container type they were created once all complete.
+/// Awaits multiple future at once, returning as soon as one completes. The
+/// other futures are cancelled.
 pub trait Race<'scope> {
     /// The resulting output type.
     type Output;
@@ -14,10 +14,10 @@ pub trait Race<'scope> {
     /// The [`ScopedFuture`] implementation returned by this method.
     type Future: ScopedFuture<'scope, Output = Self::Output>;
 
-    /// Waits for multiple futures to complete.
+    /// Wait for the first future to complete.
     ///
-    /// Awaits multiple futures simultaneously, returning the output of the futures
-    /// in the same container type they we're created once all complete.
+    /// Awaits multiple futures at once, returning as soon as one completes. The
+    /// other futures are cancelled.
     ///
     /// This function returns a new future which polls all futures concurrently.
     fn race(self) -> Self::Future;

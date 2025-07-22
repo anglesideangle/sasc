@@ -1,4 +1,4 @@
-use std::task::Poll;
+use std::task::{Poll, RawWaker};
 
 /// A task that can be woken.
 ///
