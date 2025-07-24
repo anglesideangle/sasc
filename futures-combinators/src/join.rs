@@ -27,8 +27,8 @@ pub trait Join<'scope> {
 pub trait JoinExt<'scope> {
     fn along_with<Fut>(self, other: Fut) -> Join2<'scope, Self, Fut>
     where
-        Self: Sized + 'scope + ScopedFuture<'scope>,
-        Fut: ScopedFuture<'scope> + 'scope,
+        Self: Sized + ScopedFuture<'scope>,
+        Fut: ScopedFuture<'scope>,
     {
         (self, other).join()
     }
@@ -60,7 +60,7 @@ macro_rules! impl_join_tuple {
             refs: $namespace::WakerRefs<'scope>,
         }
 
-        impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> ScopedFuture<'scope>
+        impl<'scope, $($F: ScopedFuture<'scope>),+> ScopedFuture<'scope>
             for $StructName<'scope, $($F),+>
         {
             type Output = ($($F::Output),+);
@@ -106,7 +106,7 @@ macro_rules! impl_join_tuple {
             }
         }
 
-        impl<'scope, $($F: ScopedFuture<'scope> + 'scope),+> Join<'scope> for ($($F),+) {
+        impl<'scope, $($F: ScopedFuture<'scope>),+> Join<'scope> for ($($F),+) {
             type Output = ($($F::Output),*);
             type Future = $StructName<'scope, $($F),+>;
 

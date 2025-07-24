@@ -12,8 +12,12 @@
 //! unsoundness if a ScopedFuture internally registers the waker with something
 //! that expects it to live for 'scope, and then the ScopedFutureWrapper is
 //! dropped
+//!
+//!
+//! ## TRIGGER WARNING
+//!
+//! This code is not for the faint of heart. Read at your own risk.
 
-use crate::{ScopedFuture, Wake};
 use std::{
     cell::UnsafeCell,
     marker::PhantomData,
@@ -21,6 +25,8 @@ use std::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
+
+use futures_core::{ScopedFuture, Wake};
 
 /// RawWaker: fat ptr (*const (), &'static RawWakerVTable)
 /// &'scope dyn Wake fat ptr: (&'scope (), &'scope WakeVTable)
@@ -141,4 +147,14 @@ impl<'scope, F: Future> UnscopedFutureWrapper<'scope, F> {
             marker: PhantomData,
         }
     }
+}
+
+fn test(a: &i32) -> impl ScopedFuture<'_> + '_ {
+    async fn inner(a: &i32) -> i32 {
+        a + 1
+    }
+
+    let x = inner(a);
+
+    unsafe { UnscopedFutureWrapper::from_future(inner(a)) }
 }

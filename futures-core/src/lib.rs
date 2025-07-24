@@ -1,6 +1,5 @@
 use std::task::Poll;
 
-mod compat;
 mod task;
 
 pub use crate::task::Wake;

@@ -1,5 +1,5 @@
 [package]
-name = "futures"
+name = "futures-compat"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
@@ -10,7 +10,3 @@ homepage.workspace = true
 
 [dependencies]
 futures-core = { path = "../futures-core" }
-futures-combinators = { path = "../futures-combinators" }
-futures-compat  = { path = "../futures-compat" }
-futures-derive  = { path = "../futures-derive" }
-futures-util  = { path = "../futures-util" }

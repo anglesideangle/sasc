@@ -1,0 +1,17 @@
+[lib]
+proc-macro = true
+
+[package]
+name = "futures-derive"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "visit-mut" ] }
