@@ -148,13 +148,3 @@ impl<'scope, F: Future> UnscopedFutureWrapper<'scope, F> {
         }
     }
 }
-
-fn test(a: &i32) -> impl ScopedFuture<'_> + '_ {
-    async fn inner(a: &i32) -> i32 {
-        a + 1
-    }
-
-    let x = inner(a);
-
-    unsafe { UnscopedFutureWrapper::from_future(inner(a)) }
-}

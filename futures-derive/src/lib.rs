@@ -75,9 +75,11 @@ fn wrap_async_with_scoped(
         })
         .collect();
 
+    // let has_refs = inputs
+
     quote! {
-        #(#attrs)* #vis #constness #unsafety fn #ident #generics (#inputs) -> impl ScopedFuture<'_, Output = #output> + '_ {
-            async fn #constness #unsafety fn __inner (#inputs) -> #output #block
+        #(#attrs)* #vis #constness #unsafety fn #ident #generics (#inputs) -> impl futures_core::ScopedFuture<'_, Output = #output> + '_ {
+            async #constness #unsafety fn __inner (#inputs) -> #output #block
 
             let future = __inner(#(#inner_args),*);
 

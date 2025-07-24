@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "futures-core", "futures-combinators", "futures-compat", "futures-derive", "futures-util"]
+members = [ "futures", "futures-core", "futures-combinators", "futures-compat", "futures-derive", "futures-util"]
 
 [workspace.package]
 version = "0.1.0"
