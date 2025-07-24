@@ -1,4 +1,12 @@
-use std::task::{Poll, RawWaker};
+use std::{
+    cell::UnsafeCell,
+    marker::PhantomData,
+    mem,
+    pin::Pin,
+    task::{Context, Poll, RawWaker, Waker},
+};
+
+pub mod compat;
 
 /// A task that can be woken.
 ///
@@ -11,7 +19,7 @@ pub trait Wake<'scope> {
 /// ScopedFuture represents a unit of asynchronous computation that must be
 /// polled by an external actor.
 ///
-/// Implementations access a context (`cx: &'scope mut dyn Wake`) to signal
+/// Implementations access a context (`cx: &'scope dyn Wake`) to signal
 /// they are ready to resume execution.
 ///
 /// A notable difference between `bcsc::ScopedFuture` and `core::task::Future`
