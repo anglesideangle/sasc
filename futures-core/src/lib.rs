@@ -35,9 +35,10 @@ pub use crate::task::Wake;
 /// The waker is no longer tied to the actual future's lifetime, making it
 /// unsound to not have either static tasks or reference counting.
 /// To avoid this, we want to use a &'scope waker instead, with 1 waker / task.
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 #[diagnostic::on_unimplemented(
-    message = "The type `{Self}` must implement the `ScopedFuture` trait.",
-    label = "Missing `ScopedFuture` implementation",
+    message = "`{Self}` is not a `ScopedFuture`",
+    label = "`{Self}` is not a `ScopedFuture`",
     note = "If you are trying to await a `task::Future` from within a `ScopedFuture`, note that the systems are incompatible."
 )]
 pub trait ScopedFuture<'scope> {

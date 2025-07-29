@@ -82,15 +82,6 @@ there is no way to make existing `RawWaker`/`AtomicWaker` api safe because it ca
 
 New async primitives that disallow intra-task concurrency, clone of `futures` and `futures-concurrency` for the new primitives.
 
-## TODO:
-- [x] ScopedFuture
-- [ ] static combinators (Join Race etc), see futures-concurrency
-- [ ] `#[bsync]` or some compiler ScopedFuture generation
-- [ ] growable combinators (eg. `FutureGroup`, `FuturesUnordered`) (require alloc?)
-- [ ] unsound (needs `Forget`) multithreading
-- [ ] "rethinking async rust"
-- [ ] all of the above for streams
-- [ ] rfc?
 
 channels: need lifetimed receievers, probably needs `Forget` (arc-like channels would be unsafe)
 
@@ -141,3 +132,165 @@ Tradeoffs:
 - need tons of interior mutability, since immutable/can't move means `poll` cannot take `&mut self`, cells everywhere
   - nvm lots of unsafe code, but nothing really unsound
 - potentially bad error messages? stuff like `join!` will have to output code that manually sets up the waker self ref
+
+## TODO:
+- [x] ScopedFuture
+- [x] static combinators (Join Race etc), see futures-concurrency
+- [x] `#[async_scoped]` or some compiler ScopedFuture generation
+- [ ] doubly linked list waker registration
+- [ ] repeating static time reactors - eg. make event poll every N seconds
+- [ ] io uring reactors
+- [ ] growable combinators (eg. `FutureGroup`, `FuturesUnordered`) (require alloc?)
+- [ ] unsound (needs `Forget`) multithreading
+- [ ] "rethinking async rust"
+- [ ] all of the above for streams
+- [ ] rfc?
+
+# Chapter 3
+
+man this really sucks
+
+i need better things to do
+
+issues from ch 2
+- works great[*]
+- *: incompatible with event loop - something still has to poll
+  - we're back to doubly linked list of waker registration in event loop
+  - this requires Forget
+- ScopedFuture - Future interop sucks
+
+
+structured concurrency with regular combinators:
+- scope holds tasks
+- scope cancels tasks when dropped
+- tasks are ran by central executor
+
+pure structured concurrency with borrow checker:
+- high level block_on(), any task wake wakes every level up
+- tasks have events
+
+how do the tasks register to an event loop? they don't fuck
+
+
+```rust
+struct Task<F: Future> {
+  inner: F,
+  prev: *const Task,
+  next: *const Task,
+  waker: Waker,
+}
+```
+
+&waker is passed into all sub-tasks, calling wake clone etc panics!!!
+this is pretty jank
+
+also waker doesn't have a lifetime so a safe code could easily register to external source that outlives the task
+this is unsound
+
+we need
+```rust
+struct WakerRegister {
+  prev: *const WakerRegister,
+  next: *const WakerRegister,
+}
+```
+
+# Borrow Checked Structured Concurrency
+
+An async system needs to have the following components:
+
+- event loop : polls events and schedules tasks when they are ready
+- tasks : state machines that progress and can await events from the event loop
+- task combinators : tasks that compose other tasks into useful logic structures
+
+Tasks will register themselves to events on the event loop, which will need to outlive tasks and register pointers to wake the tasks, so that they can again be polled.
+This is incompatible with the borrow checker because the task pointers (wakers) are being stored inside an event loop with a lifetime that may exceed the tasks'.
+
+`Waker` is effectively a `*const dyn Wake`. It is implemented using a custom `RawWakerVTable` rather than a `dyn` ptr to allow for `Wake::wake(self)`, which is not object safe.
+This method is necessary for runtime implementations that rely on the wakers to be effectively `Arc<Task>`, since `wake(self)` consumes `self` and decrements the reference count.
+
+There are two types of sound async runtimes that currently exist in rust:
+
+[tokio](https://github.com/tokio-rs) and [smol](https://github.com/smol-rs) work using the afformentioned reference counting system to ensure wakers aren't dangling pointers to tasks that no longer exist.
+
+[embassy](https://github.com/embassy-rs/embassy) and [rtic](https://github.com/rtic-rs/rtic) work by ensuring tasks are stored in `static` task pools for `N` tasks. Scheduled tasks are represented by an intrusively linked list to avoid allocation, and wakers can't be dangling pointers because completed tasks will refuse to add themselves back to the linked list, or will be replaced by a new task. This is useful in environments where it is desirable to avoid heap allocation, but requires the user annotate the maximum number of a specific task that can exist at one time, and fails to spawn tasks when they exceed that limit.
+
+An async runtime where futures are allocated to the stack cannot be sound under this model because `Future::poll` allows any safe `Future` implementation to store or clone wakers wherever they want, which become dangling pointers after the stack allocated future goes out of scope. In order to prevent this, we must have a circular reference, where the task (`Task<'scope>: Wake`) contains a `&'scope Waker` and the `Waker` contains `*const dyn Wake`. For that to be safe, the `Waker` must never be moved. This cannot be possible because something needs to register the waker:
+
+```rust
+// waker is moved
+poll(self: Pin<&mut Self>, cx: &mut Context<'_> /* '_ is the duration of the poll fn */) -> Poll<Self::Output> {
+  // waker is moved!
+  // can't register &Waker bc we run into the same problem,
+  // and the waker only lives for '_
+  store.register(cx.waker())
+}
+```
+
+Effectively, by saying our waker can't move, we are saying it must be stored by the task, which means it can't be a useful waker. Instead, what we could do is have a waker-register (verb, not noun) that facilitates the binding of an immovable waker to an immovable task, where the waker is guaranteed to outlive the task:
+
+```rust
+pub trait Wake<'task> {
+  fn wake(&self);
+  fn register_waker(&mut self, waker: &'task Waker);
+}
+
+pub struct Waker {
+  task: *const dyn Wake,
+  valid: bool, // task is in charge of invalidating when it goes out of scope
+}
+
+pub struct WakerRegistration<'poll> {
+  task: &'poll mut dyn Wake,
+}
+
+impl<'poll> WakerRegistration<'poll> {
+  pub fn register<'task>(self, slot: &'task Waker)
+  where
+    'task: 'poll,
+    Self: 'task
+  {
+    *slot = Waker::new(self.task as *const dyn Wake);
+    *task.register_waker(slot)
+  }
+}
+```
+
+This system works better because `WakerRegistration` only lives
+
+
+
+Experienced rust programmers might be reading this and thinking I am stupid (true) because `Forget`
+
+An astute (soon to be disappointed) reader might be thinking, as I did when I first learned about this sytem, "what if we ensured that there was only one `Waker` per `Task`, and gave the task a pointer to the waker, so that it could disable the waker when dropped?"
+
+Unfortunately, there are a multitude of issues with this system
+
+- In order to hold a pointer to the Waker from the 
+- Preventing a `Waker` from moving means panicking on the 
+
+Even if it was guaranteed that wakers could not be moved or `cloned` (by panicking on `clone`), and registration occured via `&Waker`, the task would still be unable to 
+
+https://conradludgate.com/posts/async-stack
+
+## Structured Concurrency
+
+https://trio.discourse.group/t/discussion-notes-on-structured-concurrency-or-go-statement-considered-harmful/25
+https://kotlinlang.org/docs/coroutines-basics.html
+
+Notably, the structured concurrency pattern fits very nicely with our hypothetical unsound stack based async runtime.
+
+## WeakCell Pattern & Forget trait
+
+https://github.com/rust-lang/rfcs/pull/3782
+
+
+There are two solutions:
+
+- `Wakers` panic on `clone()`
+
+## Waker allocation problem & intra task concurrency
+
+we can't do intra task concurrency because WeakRegistrations
+
+

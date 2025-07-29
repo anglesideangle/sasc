@@ -13,9 +13,6 @@
 //! that expects it to live for 'scope, and then the ScopedFutureWrapper is
 //! dropped
 //!
-//!
-//! ## TRIGGER WARNING
-//!
 //! This code is not for the faint of heart. Read at your own risk.
 
 use std::{
@@ -34,7 +31,7 @@ use futures_core::{ScopedFuture, Wake};
 /// can transmute between them, but the waker will be completely invalid!
 
 /// wraps an internal ScopedFuture, implements Future
-pub struct ScopedFutureWrapper<'scope, F: ScopedFuture<'scope> + 'scope> {
+pub struct ScopedFutureWrapper<'scope, F: ScopedFuture<'scope>> {
     inner: UnsafeCell<F>,
     marker: PhantomData<&'scope ()>,
 }
@@ -44,10 +41,7 @@ impl<'scope, F: ScopedFuture<'scope> + 'scope> Future
 {
     type Output = F::Output;
 
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // # Safety
         //
         // Transmutes `Waker` into `&'scope dyn Wake`.
@@ -102,7 +96,7 @@ pub struct UnscopedFutureWrapper<'scope, F: Future> {
     marker: PhantomData<&'scope ()>,
 }
 
-impl<'scope, F: Future> ScopedFuture<'scope>
+impl<'scope, F: Future + 'scope> ScopedFuture<'scope>
     for UnscopedFutureWrapper<'scope, F>
 {
     type Output = F::Output;
@@ -140,7 +134,7 @@ impl<'scope, F: Future> ScopedFuture<'scope>
     }
 }
 
-impl<'scope, F: Future> UnscopedFutureWrapper<'scope, F> {
+impl<'scope, F: Future + 'scope> UnscopedFutureWrapper<'scope, F> {
     pub unsafe fn from_future(f: F) -> Self {
         Self {
             inner: f.into(),

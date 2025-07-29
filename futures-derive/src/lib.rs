@@ -1,14 +1,29 @@
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{
-    Expr, ExprAwait, FnArg, GenericArgument, ItemFn, Pat, ReturnType,
-    Signature, parse_macro_input, visit_mut::VisitMut,
+    Expr, ExprAwait, FnArg, GenericArgument, ItemFn, ReturnType,
+    parse_macro_input, parse_quote, parse2, visit_mut::VisitMut,
 };
 
+/// Takes async fn that returns anonymous `Future` impl.
+/// Generates fn that returns `UnscopedFutureWrapper` wrapper for the the anonymous `Future` impl.
+///
+/// ```rust
+/// fn my_func<'a, 'b>(a: &'a A, b: &'b B) -> impl ScopedFuture<'a + 'b, Output = T> + 'a + 'b {
+///   let output = async move { [body] } // compilers turns this into -> impl Future<Output = T> + 'a + 'b
+///   unsafe { UnscopedFutureWrapper::from_future(output) }
+/// }
+/// ```
+///
+/// see https://rust-lang.github.io/rfcs/2394-async_await.html#lifetime-capture-in-the-anonymous-future
+/// for more context on lifetime capture
+/// - resulting ScopedFuture needs to be constrained to not outlive the lifetimes of any references
+///
+/// to actually implement this (capture all lifetimes) we use `ScopedFuture<'_> + '_` so the compiler can infer
+/// lifetimes from the anonymous future impl returned by the actual inner async fn
 #[proc_macro_attribute]
 pub fn async_scoped(_: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input = parse_macro_input!(item as ItemFn);
-
+    let mut item_fn = parse_macro_input!(item as ItemFn);
     // Wraps *every* async expression within the function block with
     // `ScopedFutureWrapper`, allowing them to be treated as regular `Future`
     // impls.
@@ -16,13 +31,44 @@ pub fn async_scoped(_: TokenStream, item: TokenStream) -> TokenStream {
     // This will cause a compiler error if any expression being awaited is not
     // a `ScopedFuture`, which is intentional because the `Future` and
     // `ScopedFuture` systems are incompatible.
-    ScopedFutureWrappingVisitor.visit_item_fn_mut(&mut input);
+    ScopedFutureWrappingVisitor.visit_item_fn_mut(&mut item_fn);
 
-    // Wrap the function with `UnscopedFutureWrapper` to convert it back into
-    // a `ScopedFuture`.
-    wrap_async_with_scoped(&input).into()
+    // disable async since it is moved to the block
+    item_fn.sig.asyncness = None;
+
+    // wrap block with UnscopedFutureWrapper
+    let block = *item_fn.block;
+    *item_fn.block = parse_quote! {
+        {
+            let future = async move #block;
+            unsafe { futures_compat::UnscopedFutureWrapper::from_future(future) }
+        }
+    };
+
+    let output = match &item_fn.sig.output {
+        ReturnType::Default => quote! { () },
+        ReturnType::Type(_, ty) => quote! { #ty },
+    };
+
+    let has_lifetime_dependency =
+        item_fn.sig.inputs.iter().any(|param| match param {
+            FnArg::Receiver(receiver) => receiver.reference.is_some(),
+            FnArg::Typed(pat) => has_lifetime_dependency(&pat.ty),
+        });
+
+    // set outer fn output to ScopedFuture<'_/'static, Output = #output>
+    item_fn.sig.output = if has_lifetime_dependency {
+        parse_quote! { -> impl futures_core::ScopedFuture<'_, Output = #output> + '_ }
+    } else {
+        parse_quote! { -> impl futures_core::ScopedFuture<'static, Output = #output> }
+    };
+
+    item_fn.to_token_stream().into()
 }
 
+/// This currently is impossible to do the `futures_compat` workarounds not
+/// being compatible with closures.
+///
 /// Takes async fn that returns anonymous `Future` impl.
 /// Generates fn that returns `UnscopedFutureWrapper` wrapper for the the anonymous `Future` impl.
 ///
@@ -39,62 +85,67 @@ pub fn async_scoped(_: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// to actually implement this (capture all lifetimes) we use `ScopedFuture<'_> + '_` so the compiler can infer
 /// lifetimes from the anonymous future impl returned by the actual inner async fn
-fn wrap_async_with_scoped(
-    ItemFn {
-        attrs,
-        vis,
-        sig:
-            Signature {
-                constness,
-                unsafety,
-                ident,
-                generics,
-                inputs,
-                output,
-                ..
-            },
-        block,
-    }: &ItemFn,
-) -> proc_macro2::TokenStream {
-    let output = match output {
-        ReturnType::Default => quote! { () },
-        ReturnType::Type(_, ty) => quote! { #ty },
-    };
+// #[proc_macro]
+// pub fn closure(input: TokenStream) -> TokenStream {
+//     // let ExprClosure {
+//     //     attrs,
+//     //     lifetimes,
+//     //     constness,
+//     //     movability,
+//     //     capture,
+//     //     inputs,
+//     //     output,
+//     //     body,
+//     //     ..
+//     // } = parse_macro_input!(input as ExprClosure);
+//     let mut closure = parse_macro_input!(input as ExprClosure);
+//     // disable async because we move it to inner
+//     closure.asyncness = None;
+//     let body = closure.body;
 
-    let inner_args: Vec<syn::Ident> = inputs
-        .iter()
-        .filter_map(|param| match param {
-            FnArg::Receiver(_) => Some(quote::format_ident!("self")),
-            FnArg::Typed(typed) => {
-                if let Pat::Ident(ident) = &*typed.pat {
-                    Some(ident.ident.to_owned())
-                } else {
-                    None
-                }
-            }
-        })
-        .collect();
+//     // let output = match closure.output {
+//     //     ReturnType::Default => parse_quote! { () },
+//     //     ReturnType::Type(_, ty) => parse_quote! { #ty },
+//     // };
 
-    let has_lifetime_dependency = inputs.iter().any(|param| match param {
-        FnArg::Receiver(receiver) => receiver.reference.is_some(),
-        FnArg::Typed(pat) => has_lifetime_dependency(&pat.ty),
-    });
+//     // let outer_output =
+//     //     parse_quote! { futures_core::ScopedFuture<'_, Output = #output> + '_ };
 
-    let outer_output = if has_lifetime_dependency {
-        quote! { futures_core::ScopedFuture<'_, Output = #output> + '_ }
-    } else {
-        quote! { futures_core::ScopedFuture<'static, Output = #output> }
-    };
+//     closure.body = parse_quote! {{
+//         let output = async move { #body };
+//         unsafe { futures_compat::UnscopedFutureWrapper::from_future(output) }
+//     }};
+//     // closure.output = outer_output;
+//     closure.to_token_stream().into()
+// }
+
+/// Wraps a block of optionally async statements and expressions in an anonymous `ScopedFuture` impl.
+///
+/// This generates a modified block of the form:
+///
+/// ```rust
+/// {
+///   let output = async { <original block, mapped to convert all `ScopedFuture` to `Future`> };
+///   unsafe { futures_compat::UnscopedFutureWrapper::from_future(output) }
+/// }
+/// ```
+#[proc_macro]
+pub fn block(input: TokenStream) -> TokenStream {
+    // block is formed { **expr/stmt }, so we need to surround the inputs in {}
+    let input = proc_macro2::TokenStream::from(input);
+    let block_input = quote! { { #input } };
+
+    let mut block = parse2(block_input).expect("Failed to parse as block.");
+
+    ScopedFutureWrappingVisitor.visit_block_mut(&mut block);
 
     quote! {
-        #(#attrs)* #vis #constness #unsafety fn #ident #generics (#inputs) -> impl #outer_output {
-            async #constness #unsafety fn __inner (#inputs) -> #output #block
-
-            let future = __inner(#(#inner_args),*);
-
-            unsafe { futures_compat::UnscopedFutureWrapper::from_future(future) }
+        {
+            let output = async #block;
+            unsafe { futures_compat::UnscopedFutureWrapper::from_future(output) }
         }
     }
+    .into()
 }
 
 /// Determines if typed pattern contains a reference or dependency on a

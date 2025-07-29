@@ -13,3 +13,5 @@
 !/futures/**
 !/futures-*/
 !/futures-*/**
+!/lifetime-guard/
+!/lifetime-guard/**
