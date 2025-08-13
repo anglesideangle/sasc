@@ -1,72 +1,15 @@
 /// Unsound Drop based guard API
 use std::{
     cell::Cell,
-    mem,
-    pin::{Pin, pin},
-    ptr::{self, NonNull, dangling},
+    marker::PhantomPinned,
+    pin::Pin,
+    ptr::{self},
 };
-
-/// must not outlive strong guard
-///
-/// enforces strong guard doesn't move with ptr
-pub struct WeakGuard<'weak, T> {
-    strong: Option<&'weak StrongGuard<'weak, T>>,
-}
-
-impl<'weak, T> WeakGuard<'weak, T> {
-    pub fn register_strong(&mut self, weak: &'weak T) {
-        self.strong = Some(weak);
-    }
-}
-
-impl<'weak, T> Drop for WeakGuard<'weak, StrongGuard<'weak, T>> {
-    fn drop(&mut self) {
-        // self.weak.
-    }
-}
-
-/// outlives strong guard
-pub struct StrongGuard<'weak, T> {
-    strong: *const WeakGuard<'weak, T>,
-}
-
-// wakers must outlive 'task
-impl<'weak, T> StrongGuard<'weak, T> {
-    pub fn new(strong: *const WeakGuard<'weak, T>) -> Self {
-        Self {
-            strong: task.into(),
-        }
-    }
-}
-
-// pub struct GuardRegistration<'weak, T> {
-//     task: &'weak StrongGuard<'weak, T>, // valid for all of 'weak
-// }
-
-// impl<'weak> GuardRegistration<'weak> {
-//     // slot is valid for all 'weak
-//     pub fn register(self, slot: &'weak mut StrongGuard<'weak>) {
-//         // Cast from 'weak to 'static
-//         //
-//         // # Safety
-//         //
-//         // This is safe because the drop guard guarantees that the task ptr (which lives for static)
-//         // becomes null when the wake is dropped, ensuring the dangling pointer is never dereferenced.
-//         let dangling_task = unsafe {
-//             mem::transmute::<
-//                 &'weak dyn StrongGuard<'weak>,
-//                 *const dyn StrongGuard<'weak>,
-//             >(self.task)
-//         };
-//         slot.strong = dangling_task;
-
-//         (*self.task).register_waker(slot);
-//     }
-// }
 
 pub struct ValueGuard<T> {
     data: T,
     ref_guard: Cell<*const RefGuard<T>>,
+    _marker: PhantomPinned,
 }
 
 impl<T> ValueGuard<T> {
@@ -74,7 +17,12 @@ impl<T> ValueGuard<T> {
         Self {
             data,
             ref_guard: Cell::new(ptr::null()),
+            _marker: PhantomPinned,
         }
+    }
+
+    pub fn registration<'a>(self: Pin<&'a Self>) -> GuardRegistration<'a, T> {
+        GuardRegistration { value_guard: self }
     }
 
     pub fn set(&mut self, value: T) {
@@ -101,12 +49,14 @@ impl<T> Drop for ValueGuard<T> {
 
 pub struct RefGuard<T> {
     value_guard: Cell<*const ValueGuard<T>>,
+    _marker: PhantomPinned,
 }
 
 impl<T> RefGuard<T> {
     pub fn new() -> Self {
         Self {
             value_guard: Cell::new(ptr::null()),
+            _marker: PhantomPinned,
         }
     }
 }
@@ -133,21 +83,50 @@ impl<'a, T> GuardRegistration<'a, T> {
         Self { value_guard }
     }
 
-    pub fn register(self, slot: Pin<&'a mut RefGuard<T>>) {
+    pub fn register(self, slot: Pin<&'a RefGuard<T>>) {
         // register new ptrs
         let old_value_guard = slot
             .value_guard
             .replace(self.value_guard.get_ref() as *const ValueGuard<T>);
 
-        let old_ref_guard = self
-            .value_guard
-            .ref_guard
-            .replace(slot.into_ref().get_ref());
+        let old_ref_guard = self.value_guard.ref_guard.replace(slot.get_ref());
 
         // annul old ptrs
         unsafe { old_value_guard.as_ref() }
             .inspect(|guard| guard.ref_guard.set(ptr::null()));
         unsafe { old_ref_guard.as_ref() }
             .inspect(|guard| guard.value_guard.set(ptr::null()));
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::pin;
+
+    use super::*;
+
+    fn consume<T>(input: T) {}
+
+    #[test]
+    fn basic() {
+        let weak = RefGuard::new();
+        let weak_pinned = pin::pin!(weak);
+        {
+            let mut strong = ValueGuard::new(2);
+            let mut strong_pinned = pin::pin!(strong);
+            strong_pinned
+                .as_ref()
+                .registration()
+                .register(weak_pinned.as_ref());
+
+            assert_eq!(strong_pinned.get(), 2);
+            assert_eq!(weak_pinned.get(), Some(2));
+
+            unsafe { strong_pinned.as_mut().get_unchecked_mut() }.set(3);
+            assert_eq!(strong_pinned.get(), 3);
+            assert_eq!(weak_pinned.get(), Some(3));
+        }
+
+        assert_eq!(weak_pinned.get(), None);
     }
 }
