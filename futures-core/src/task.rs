@@ -1,4 +1,4 @@
-use std::{mem, ptr::NonNull, sync::atomic::AtomicPtr};
+use std::mem;
 
 // Task: Wake
 //

@@ -9,5 +9,5 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-futures-core = { path = "../futures-core" }
-futures-util = { path = "../futures-util" }
+futures-core = { workspace = true }
+futures-util = { workspace = true }

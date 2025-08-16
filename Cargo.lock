@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "futures"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures-combinators",
  "futures-compat",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "futures-combinators"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -23,18 +23,18 @@ dependencies = [
 
 [[package]]
 name = "futures-compat"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures-core",
 ]
 
 [[package]]
 name = "futures-core"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "futures-derive"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -43,14 +43,14 @@ dependencies = [
 
 [[package]]
 name = "futures-util"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures-core",
 ]
 
 [[package]]
 name = "lifetime-guard"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "proc-macro2"

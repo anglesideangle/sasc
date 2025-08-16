@@ -1,5 +1,7 @@
 [package]
 name = "lifetime-guard"
+keywords = [ "weak_ptr", "value_guard", "no_std" ]
+categories = [ "data-structures", "no-std::no-alloc" ]
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true

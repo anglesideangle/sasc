@@ -3,7 +3,7 @@ resolver = "3"
 members = [ "futures", "futures-core", "futures-combinators", "futures-compat", "futures-derive", "futures-util", "lifetime-guard"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.0"
 rust-version = "1.87"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -11,3 +11,11 @@ authors = ["Asa Paparo <asapaparo@gmail.com>"]
 repository = "https://github.com/AngleSideAngle/bcsc"
 homepage = "https://github.com/AngleSideAngle/bcsc"
 
+[workspace.dependencies]
+futures = { path = "futures", version = "0.0.0" }
+futures-combinators = { path = "futures-combinators", version = "0.0.0" }
+futures-compat = { path = "futures-compat", version = "0.0.0" }
+futures-core = { path = "futures-core", version = "0.0.0" }
+futures-derive = { path = "futures-derive", version = "0.0.0" }
+futures-util = { path = "futures-util", version = "0.0.0" }
+lifetime-guard = { path = "lifetime-guard", version = "0.0.0" }
