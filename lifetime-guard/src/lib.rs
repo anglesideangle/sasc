@@ -27,12 +27,20 @@
 //!
 //! # Safety
 //!
-//! You *may not* leak any instance of either `ValueGuard` or `RefGuard`.
+//! You *may not* leak any instance of either `ValueGuard` or `RefGuard` to the
+//! stack using `mem::forget()` or any other mechanism that causes thier
+//! contents to be overwritten without `Drop::drop()` running.
+//! Doing so creates unsoundness that likely will lead to dereferencing a null
+//! pointer.
 //!
 //! Doing so creates unsoundness that likely will lead to dereferencing a null
 //! pointer. See the
 //! [Forget marker trait](https://github.com/rust-lang/rfcs/pull/3782) rfc for
 //! progress on making interfaces that rely on not being leaked sound.
+//!
+//! Note that it is sound to leak `ValueGuard` and `RefGuard` to the heap using
+//! methods including `Box::leak()` because heap allocated data will never be
+//! overwritten if it is never freed.
 
 use std::{cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
 
@@ -42,17 +50,20 @@ use std::{cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
 /// A `ValueGuard`:`RefGuard` relationship is exclusive, and behaves similarly
 /// to a single `Rc` and `Weak` pair, but notably does not require heap
 /// allocation. `ValueGuard::registration` creates a `GuardRegistration`, which
-/// provides a movable wrapper for safetly creating the circular references
+/// provides a movable wrapper for safety creating the circular references
 /// between two pinned self referential structs.
 ///
 /// # Safety
 ///
-/// This struct *must* not be leaked, using `mem::forget`, `Rc`, `Arc`, etc.
-///
+/// This struct *must* not be leaked to the stack using `mem::forget` or any
+/// other mechanism that causes the contents of `Self` to be overwritten
+/// without `Drop::drop()` running.
 /// Doing so creates unsoundness that likely will lead to dereferencing a null
-/// pointer. See the
-/// [Forget marker trait](https://github.com/rust-lang/rfcs/pull/3782) rfc for
-/// progress on making interfaces that rely on not being leaked sound.
+/// pointer.
+///
+/// Note that it is sound to leak `Self` to the heap using methods including
+/// `Box::leak()` because heap allocated data will never be overwritten if it
+/// is never freed.
 pub struct ValueGuard<T> {
     /// Contains the value being immutably accessed by `RefGuard` and
     /// mutably accessed by `Self`
@@ -78,7 +89,7 @@ impl<T> ValueGuard<T> {
         }
     }
 
-    /// Returns a `GuardRegistration`, which can be used to safetly link `Self`
+    /// Returns a `GuardRegistration`, which can be used to safety link `Self`
     /// to a `RefGuard`.
     #[inline]
     pub fn registration<'a>(self: Pin<&'a Self>) -> GuardRegistration<'a, T> {
@@ -119,13 +130,15 @@ impl<T> Drop for ValueGuard<T> {
 ///
 /// # Safety
 ///
-/// This struct *must* not be leaked, using `mem::forget`, `Rc`, `Arc`, etc.
-///
+/// This struct *must* not be leaked to the stack using `mem::forget` or any
+/// other mechanism that causes the contents of `Self` to be overwritten
+/// without `Drop::drop()` running.
 /// Doing so creates unsoundness that likely will lead to dereferencing a null
-/// pointer. See the
-/// [Forget marker trait](https://github.com/rust-lang/rfcs/pull/3782) rfc for
-/// progress on making interfaces that rely on not being leaked sound.
-
+/// pointer.
+///
+/// Note that it is sound to leak `Self` to the heap using methods including
+/// `Box::leak()` because heap allocated data will never be overwritten if it
+/// is never freed.
 pub struct RefGuard<T> {
     value_guard: Cell<Option<NonNull<ValueGuard<T>>>>,
     _marker: PhantomPinned,
@@ -165,6 +178,13 @@ impl<T> Drop for RefGuard<T> {
         if let Some(guard) = self.value_guard.get() {
             invalidate_value_guard(guard);
         }
+    }
+}
+
+impl<T> Default for RefGuard<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -210,7 +230,7 @@ impl<'a, T> GuardRegistration<'a, T> {
 
 #[cfg(test)]
 mod test {
-    use std::pin;
+    use std::{mem, pin};
 
     use super::*;
 
@@ -262,5 +282,19 @@ mod test {
 
         assert_eq!(weak1.get(), None);
         assert_eq!(weak2.get(), None);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn safe_leak() {
+        let strong = Box::pin(ValueGuard::new(10));
+        let weak = pin::pin!(RefGuard::new());
+        strong.as_ref().registration().register(weak.as_ref());
+
+        // strong is now a ValueGuard on the heap that will never be freed
+        // this is sound because it will never be overwritten
+        mem::forget(strong);
+
+        assert_eq!(weak.get(), Some(10));
     }
 }
