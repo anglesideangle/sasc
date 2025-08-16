@@ -1,5 +1,6 @@
 [package]
 name = "lifetime-guard"
+description = "create weak/strong reference pairs to interior mutable data on the stack"
 keywords = [ "weak_ptr", "value_guard", "no_std" ]
 categories = [ "data-structures", "no-std::no-alloc" ]
 version.workspace = true
