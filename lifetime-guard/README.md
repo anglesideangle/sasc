@@ -13,7 +13,7 @@ use lifetime_guard::{ ValueGuard, RefGuard };
 let weak = pin::pin!(RefGuard::new());
 {
     let strong = pin::pin!(ValueGuard::new(0));
-    strong.as_ref().registration().register(weak.as_ref());
+    weak.as_ref().register(strong.as_ref());
 
     assert_eq!(strong.get(), 0);
     assert_eq!(weak.get(), Some(0));
@@ -28,7 +28,7 @@ assert_eq!(weak.get(), None);
 # Safety
 
 You *may not* leak any instance of either `ValueGuard` or `RefGuard` to the
-stack using `mem::forget()` or any other mechanism that causes thier
+stack using `mem::forget()` or any other mechanism that causes their
 contents to be overwritten without `Drop::drop()` running.
 Doing so creates unsoundness that likely will lead to dereferencing a null
 pointer.
@@ -41,4 +41,7 @@ progress on making interfaces that rely on not being leaked sound.
 Note that it is sound to leak `ValueGuard` and `RefGuard` to the heap using
 methods including `Box::leak()` because heap allocated data will never be
 overwritten if it is never freed.
+
+The test cases for this library have been verified to not exhibit undefined
+behavior using [miri](https://github.com/rust-lang/miri).
 

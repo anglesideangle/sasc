@@ -3,13 +3,11 @@
 use std::{cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
 
 /// Strong guard for granting read access to a single interior mutable value to
-/// `RefGuard`.
+/// [`RefGuard`](RefGuard).
 ///
 /// A `ValueGuard`:`RefGuard` relationship is exclusive, and behaves similarly
 /// to a single `Rc` and `Weak` pair, but notably does not require heap
-/// allocation. `ValueGuard::registration` creates a `GuardRegistration`, which
-/// provides a movable wrapper for safety creating the circular references
-/// between two pinned self referential structs.
+/// allocation.
 ///
 /// # Safety
 ///
@@ -47,13 +45,6 @@ impl<T> ValueGuard<T> {
         }
     }
 
-    /// Returns a `GuardRegistration`, which can be used to safety link `Self`
-    /// to a `RefGuard`.
-    #[inline]
-    pub fn registration<'a>(self: Pin<&'a Self>) -> GuardRegistration<'a, T> {
-        GuardRegistration { value_guard: self }
-    }
-
     /// Sets the internal value stored by `Self`.
     #[inline]
     pub fn set(&self, value: T) {
@@ -86,6 +77,9 @@ impl<T> Drop for ValueGuard<T> {
 
 /// Weak guard for acquiring read only access to a `ValueGuard`'s value.
 ///
+/// Provides [`WeakGuard::register()`](Self::register) to register a `ValueGuard`
+/// to `Self` and vice versa.
+///
 /// # Safety
 ///
 /// This struct *must* not be leaked to the stack using `mem::forget` or any
@@ -109,6 +103,35 @@ impl<T> RefGuard<T> {
         Self {
             value_guard: Cell::new(None),
             _marker: PhantomPinned,
+        }
+    }
+
+    /// Binds a pinned `value_guard` to `self`.
+    ///
+    /// This means they will reference each other, and will invalidate their
+    /// references to each other when dropped.
+    ///
+    /// This method also invalidates the existing references held by the
+    /// now-replaced referencees of `self` and `value_guard` to avoid
+    /// dangling pointers.
+    pub fn register<'a>(
+        self: Pin<&'a RefGuard<T>>,
+        value_guard: Pin<&'a ValueGuard<T>>,
+    ) {
+        // replace input value_guard's ref guard with reference to self
+        // and invalidate the old ref guard guard if it exists
+        if let Some(old_guard) =
+            value_guard.ref_guard.replace(Some(self.get_ref().into()))
+        {
+            invalidate_ref_guard(old_guard);
+        }
+
+        // replace self's value guard with reference to input value_guard
+        // and invalidate self.value_guard's old ref guard if it exists
+        if let Some(old_guard) =
+            self.value_guard.replace(Some(value_guard.get_ref().into()))
+        {
+            invalidate_value_guard(old_guard);
         }
     }
 }
@@ -146,46 +169,6 @@ impl<T> Default for RefGuard<T> {
     }
 }
 
-/// Safe api for creating self reference between a pinned `ValueGuard` and
-/// `RefGuard` pair.
-///
-/// This can be acquired with
-/// [`ValueGuard::registration()`](ValueGuard::registration).
-pub struct GuardRegistration<'a, T> {
-    value_guard: Pin<&'a ValueGuard<T>>,
-}
-
-impl<'a, T> GuardRegistration<'a, T> {
-    /// Binds a provided `slot` to the `self.value_guard`.
-    ///
-    /// This means they will reference each other, and will invalidate their
-    /// references to each other when dropped.
-    ///
-    /// This method also invalidates the existing references held by the
-    /// now-replaced referencees of `slot` and `self.value_guard` to avoid
-    /// dangling pointers.
-    pub fn register(self, slot: Pin<&'a RefGuard<T>>) {
-        // replace slot's value guard with reference to self.value_guard
-        // and invalidate slot's old value guard if it exists
-        if let Some(old_guard) = slot
-            .value_guard
-            .replace(Some(self.value_guard.get_ref().into()))
-        {
-            invalidate_value_guard(old_guard);
-        }
-
-        // replace self.value_guard's ref guard with reference to slot
-        // and invalidate self.value_guard's old ref guard if it exists
-        if let Some(old_guard) = self
-            .value_guard
-            .ref_guard
-            .replace(Some(slot.get_ref().into()))
-        {
-            invalidate_ref_guard(old_guard);
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::{mem, pin};
@@ -197,7 +180,7 @@ mod test {
         let weak = pin::pin!(RefGuard::new());
         {
             let strong = pin::pin!(ValueGuard::new(2));
-            strong.as_ref().registration().register(weak.as_ref());
+            weak.as_ref().register(strong.as_ref());
 
             assert_eq!(strong.get(), 2);
             assert_eq!(weak.get(), Some(2));
@@ -216,7 +199,7 @@ mod test {
         let weak2 = pin::pin!(RefGuard::new());
         {
             let strong = pin::pin!(ValueGuard::new(2));
-            strong.as_ref().registration().register(weak1.as_ref());
+            weak1.as_ref().register(strong.as_ref());
 
             assert_eq!(strong.get(), 2);
             assert_eq!(weak1.get(), Some(2));
@@ -226,7 +209,7 @@ mod test {
             assert_eq!(weak1.get(), Some(3));
 
             // register next ptr, should invalidate previous weak ref (weak1)
-            strong.as_ref().registration().register(weak2.as_ref());
+            weak2.as_ref().register(strong.as_ref());
             assert_eq!(weak1.get(), None);
             assert_eq!(weak1.value_guard.get(), None);
 
@@ -247,7 +230,7 @@ mod test {
     fn safe_leak() {
         let strong = Box::pin(ValueGuard::new(10));
         let weak = pin::pin!(RefGuard::new());
-        strong.as_ref().registration().register(weak.as_ref());
+        weak.as_ref().register(strong.as_ref());
 
         // strong is now a ValueGuard on the heap that will never be freed
         // this is sound because it will never be overwritten
