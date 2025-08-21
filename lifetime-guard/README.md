@@ -4,11 +4,14 @@
 weak references to interior mutable values, similar to a singular pair of
 `Rc` and `Weak`, but without heap allocation.
 
+For parallelism, it provides `AtomicValueGuard` and `AtomicRefGuard` that
+implement `Send`.
+
 ## Example Usage
 
 ```rust
 use std::pin;
-use lifetime_guard::{ ValueGuard, RefGuard };
+use lifetime_guard::guard::*;
 
 let weak = pin::pin!(RefGuard::new());
 {

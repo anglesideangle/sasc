@@ -11,4 +11,12 @@ license.workspace = true
 keywords = [ "weak_ptr", "value_guard", "no_std" ]
 categories = [ "data-structures", "no-std::no-alloc" ]
 
+[features]
+default = ["atomics"]
+atomics = ["dep:critical-section"]
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [dependencies]
+critical-section = { version = "1.1", features = ["std"], optional = true }

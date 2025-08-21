@@ -1,4 +1,4 @@
-use std::task::Poll;
+use std::{pin::Pin, task::Poll};
 
 mod task;
 
@@ -46,8 +46,10 @@ pub trait ScopedFuture<'scope> {
 
     /// as soon as poll is called, the struct becomes self-referential,
     /// effectively pinned until dropped (or forgotten....D; )
-    fn poll(
-        self: &'scope Self,
-        wake: &'scope dyn Wake<'scope>,
-    ) -> Poll<Self::Output>;
+    fn poll<'events>(
+        self: Pin<&mut Self>,
+        wake: &'events dyn Wake<'scope>,
+    ) -> Poll<Self::Output>
+    where
+        'events: 'scope;
 }
