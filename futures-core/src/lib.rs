@@ -1,55 +1,125 @@
-use std::{pin::Pin, task::Poll};
+//! Redefinitions of task::Future to be incompatible with them
 
-mod task;
+use std::{
+    ops,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-pub use crate::task::Wake;
-
-/// ScopedFuture represents a unit of asynchronous computation that must be
-/// polled by an external actor.
+/// A future represents an asynchronous computation obtained by use of `async`.
 ///
-/// Implementations access a context (`cx: &'scope dyn Wake`) to signal
-/// they are ready to resume execution.
+/// This future assumes a nonstandard Context, which is incompatible with
+/// executors or reactors made for `core::future::Future`. In the interest of
+/// safety, it has a dedicated type.
 ///
-/// A notable difference between `bcsc::ScopedFuture` and `core::task::Future`
-/// is the latter cannot safetly ran as a task by an executor without having a
-/// 'static lifetime. This is because there is no way for the compiler to
-/// guarantee the task doesn't outlive any data, as the executor is free to
-/// cancel it (or refuse to) whenever it wants.
+/// A future is a value that might not have finished computing yet. This kind of
+/// "asynchronous value" makes it possible for a thread to continue doing useful
+/// work while it waits for the value to become available.
 ///
-/// Additionally, because raw/unsafe implementations of `core::task::Waker`
-/// effectively do lifetime-erasure, stack-allocated futures cannot prevent
-/// unsound behavior from wakers outliving them (even `Forget` would not
-/// entirely fix this due to the api).
+/// # The `poll` method
 ///
-/// In order to avoid unsound behavior, executors must either use Weak<Wake>
-/// for safetly losing access to tasks or enforce tasks being stored in
-/// `static` pools of memory.
+/// The core method of future, `poll`, *attempts* to resolve the future into a
+/// final value. This method does not block if the value is not ready. Instead,
+/// the current task is scheduled to be woken up when it's possible to make
+/// further progress by `poll`ing again. The `context` passed to the `poll`
+/// method can provide a [`Waker`], which is a handle for waking up the current
+/// task.
 ///
-/// `ScopedFuture` instead leverages the borrow checker to allow for (less
-/// powerful) stack based async execution.
+/// When using a future, you generally won't call `poll` directly, but instead
+/// `.await` the value.
 ///
-/// some more:
-/// what occurs in `core::task::Future::poll()` is that the ref to a cx.waker
-/// is cloned and stored by a reactor via some method.
-///
-/// The waker is no longer tied to the actual future's lifetime, making it
-/// unsound to not have either static tasks or reference counting.
-/// To avoid this, we want to use a &'scope waker instead, with 1 waker / task.
+/// [`Waker`]: crate::task::Waker
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a `ScopedFuture`",
-    label = "`{Self}` is not a `ScopedFuture`",
-    note = "If you are trying to await a `task::Future` from within a `ScopedFuture`, note that the systems are incompatible."
+    label = "`{Self}` is not a `bcsc::Future`",
+    message = "`{Self}` is not a `bcsc::Future`",
+    note = "If you are trying to await a `core::future::Future` from within a `bcsc::Future`, note that the systems are incompatible."
 )]
-pub trait ScopedFuture<'scope> {
+pub trait Future {
+    /// The type of value produced on completion.
     type Output;
 
-    /// as soon as poll is called, the struct becomes self-referential,
-    /// effectively pinned until dropped (or forgotten....D; )
-    fn poll<'events>(
-        self: Pin<&mut Self>,
-        wake: &'events dyn Wake<'scope>,
-    ) -> Poll<Self::Output>
-    where
-        'events: 'scope;
+    /// Attempts to resolve the future to a final value, registering
+    /// the current task for wakeup if the value is not yet available.
+    ///
+    /// # Return value
+    ///
+    /// This function returns:
+    ///
+    /// - [`Poll::Pending`] if the future is not ready yet
+    /// - [`Poll::Ready(val)`] with the result `val` of this future if it
+    ///   finished successfully.
+    ///
+    /// Once a future has finished, clients should not `poll` it again.
+    ///
+    /// When a future is not ready yet, `poll` returns `Poll::Pending` and
+    /// stores a clone of the [`Waker`] copied from the current [`Context`].
+    /// This [`Waker`] is then woken once the future can make progress.
+    /// For example, a future waiting for a socket to become
+    /// readable would call `.clone()` on the [`Waker`] and store it.
+    /// When a signal arrives elsewhere indicating that the socket is readable,
+    /// [`Waker::wake`] is called and the socket future's task is awoken.
+    /// Once a task has been woken up, it should attempt to `poll` the future
+    /// again, which may or may not produce a final value.
+    ///
+    /// Note that on multiple calls to `poll`, only the [`Waker`] from the
+    /// [`Context`] passed to the most recent call should be scheduled to
+    /// receive a wakeup.
+    ///
+    /// # Runtime characteristics
+    ///
+    /// Futures alone are *inert*; they must be *actively* `poll`ed to make
+    /// progress, meaning that each time the current task is woken up, it should
+    /// actively re-`poll` pending futures that it still has an interest in.
+    ///
+    /// The `poll` function is not called repeatedly in a tight loop -- instead,
+    /// it should only be called when the future indicates that it is ready to
+    /// make progress (by calling `wake()`). If you're familiar with the
+    /// `poll(2)` or `select(2)` syscalls on Unix it's worth noting that futures
+    /// typically do *not* suffer the same problems of "all wakeups must poll
+    /// all events"; they are more like `epoll(4)`.
+    ///
+    /// An implementation of `poll` should strive to return quickly, and should
+    /// not block. Returning quickly prevents unnecessarily clogging up
+    /// threads or event loops. If it is known ahead of time that a call to
+    /// `poll` may end up taking a while, the work should be offloaded to a
+    /// thread pool (or something similar) to ensure that `poll` can return
+    /// quickly.
+    ///
+    /// # Panics
+    ///
+    /// Once a future has completed (returned `Ready` from `poll`), calling its
+    /// `poll` method again may panic, block forever, or cause other kinds of
+    /// problems; the `Future` trait places no requirements on the effects of
+    /// such a call. However, as the `poll` method is not marked `unsafe`,
+    /// Rust's usual rules apply: calls must never cause undefined behavior
+    /// (memory corruption, incorrect use of `unsafe` functions, or the like),
+    /// regardless of the future's state.
+    ///
+    /// [`Poll::Ready(val)`]: Poll::Ready
+    /// [`Waker`]: crate::task::Waker
+    /// [`Waker::wake`]: crate::task::Waker::wake
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
+}
+
+impl<F: ?Sized + Future + Unpin> Future for &mut F {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
+        F::poll(Pin::new(&mut **self), cx)
+    }
+}
+
+impl<P> Future for Pin<P>
+where
+    P: ops::DerefMut<Target: Future>,
+{
+    type Output = <<P as ops::Deref>::Target as Future>::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        <P::Target as Future>::poll(self.as_deref_mut(), cx)
+    }
 }

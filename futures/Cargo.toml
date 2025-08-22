@@ -9,7 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-futures-core = { workspace = true }
 futures-combinators = { workspace = true }
 futures-compat  = { workspace = true }
 futures-derive  = { workspace = true }

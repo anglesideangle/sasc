@@ -1,144 +1,76 @@
-//! Any interaction between the real Future ecosystem and ScopedFuture
-//! ecosystem is strictly unsound
-//!
-//! ScopedFutures cannot poll Futures because they can't guarantee they
-//! will outlive *const () ptrs they supply to the futures, leading to
-//! dangling pointers if the futures register the waker with something that
-//! assumes assumes it is valid for 'static and then the ScopedFuture goes
-//! out of scope
-//!
-//! Futures cannot poll ScopedFutures because they cannot guarantee their
-//! Waker will be valid for 'scope (due to lack of real borrowing), leading to
-//! unsoundness if a ScopedFuture internally registers the waker with something
-//! that expects it to live for 'scope, and then the ScopedFutureWrapper is
-//! dropped
-//!
-//! This code is not for the faint of heart. Read at your own risk.
+//! Any interaction between an executor/reactor intended for task::Future
+//! with an executor/reactor intended for bcsc::Future is strictly unsound.
 
 use std::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    mem,
     pin::Pin,
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-use futures_core::{ScopedFuture, Wake};
+use lifetime_guard::atomic_guard::AtomicValueGuard;
 
-/// RawWaker: fat ptr (*const (), &'static RawWakerVTable)
-/// &'scope dyn Wake fat ptr: (&'scope (), &'scope WakeVTable)
+static EVIL_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    |_| panic!("wtf"),
+    |_| panic!("wtf"),
+    |_| panic!("wtf"),
+    |_| panic!("wtf"),
+);
+
+/// Coerces a pinned `AtomicValueGuard` reference to a `Waker` for use in
+/// `core::future::Future`
 ///
-/// can transmute between them, but the waker will be completely invalid!
-
-/// wraps an internal ScopedFuture, implements Future
-pub struct ScopedFutureWrapper<'scope, F: ScopedFuture<'scope>> {
-    inner: UnsafeCell<F>,
-    marker: PhantomData<&'scope ()>,
+/// Any usage or storage of the resulting `Waker` is undefined behavior.
+pub unsafe fn guard_to_waker(guard: Pin<&AtomicValueGuard<fn()>>) -> Waker {
+    unsafe {
+        Waker::from_raw(RawWaker::new(
+            guard.get_ref() as *const AtomicValueGuard<fn()> as *const (),
+            &EVIL_VTABLE,
+        ))
+    }
 }
 
-impl<'scope, F: ScopedFuture<'scope> + 'scope> Future
-    for ScopedFutureWrapper<'scope, F>
-{
+/// Coerces a `Waker` into a pinned `AtomicValueGuard` reference.
+///
+/// This should only be used to undo the work of `guard_to_waker`.
+pub unsafe fn waker_to_guard<'a>(
+    waker: Waker,
+) -> Pin<&'a AtomicValueGuard<fn()>> {
+    unsafe {
+        Pin::new_unchecked(&*(waker.data() as *const AtomicValueGuard<fn()>))
+    }
+}
+
+/// wraps `core::future::Future` in impl of `bcsc:Future`
+#[repr(transparent)]
+pub struct NormalFutureWrapper<F: core::future::Future>(F);
+
+impl<F: core::future::Future> futures_core::Future for NormalFutureWrapper<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // # Safety
-        //
-        // Transmutes `Waker` into `&'scope dyn Wake`.
-        // This is possible because Waker (internally just RawWaker) contains
-        // (*const (), &'static RawWakerVTable), and the fat ptr `&dyn Wake`
-        // internally is (*const (), *const WakeVTable).
-        //
-        // For this to be sound, the input waker from `cx` must be an invalid
-        // waker (using the waker as intended would be UB) that has the form of
-        // a `&dyn Wake` fat ptr, as generated in `UnscopedFutureWrapper`.
-        //
-        // This is only sound because it is paired with the transmute in
-        // `UnscopedFutureWrapper`
-        //
-        // This conversion is necessary to piggyback off rustc's expansion
-        // of `async` blocks into state machines implementing `Future`.
-        //
-        // The unpinning is safe because inner (a `ScopedFuture`) cannot be
-        // moved after a self reference is established on its first `poll`.
-        //
-        // The use of the `UnsafeCell` is sound and necessary to get around
-        // the afformentioned immutable self reference (since `Future::poll`)
-        // requires a `&mut Self`. It is sound because we never take a
-        // `&mut self.inner`.
-        unsafe {
-            let this = self.get_unchecked_mut();
-            let wake: &'scope dyn Wake = mem::transmute::<
-                Waker,
-                &'scope dyn Wake,
-            >(cx.waker().to_owned());
-            (&*this.inner.get()).poll(wake)
-        }
+        unsafe { self.map_unchecked_mut(|this| &mut this.0).poll(cx) }
     }
 }
 
-impl<'scope, F: ScopedFuture<'scope> + 'scope> ScopedFutureWrapper<'scope, F> {
-    pub unsafe fn from_scoped(f: F) -> Self {
-        Self {
-            inner: f.into(),
-            marker: PhantomData,
-        }
+impl<F: core::future::Future> NormalFutureWrapper<F> {
+    pub unsafe fn from_std_future(future: F) -> Self {
+        Self(future)
     }
 }
 
-/// wraps an internal Future, implements ScopedFuture
-/// this is fundamentally unsafe and relies on the future not registering its waker
-/// in any reactor that lives beyond this wrapper, otherwise there will be a dangling pointer
-///
-/// it is safe to use only with the #[async_scoped] macro, which guarantees that, internally, every futures is a ScopedFutureWrapper
-pub struct UnscopedFutureWrapper<'scope, F: Future> {
-    inner: UnsafeCell<F>,
-    marker: PhantomData<&'scope ()>,
-}
+/// wraps custom `bcsc::Future` in impl of `core::future::Future`
+#[repr(transparent)]
+pub struct CustomFutureWrapper<F: futures_core::Future>(F);
 
-impl<'scope, F: Future + 'scope> ScopedFuture<'scope>
-    for UnscopedFutureWrapper<'scope, F>
-{
+impl<F: futures_core::Future> core::future::Future for CustomFutureWrapper<F> {
     type Output = F::Output;
 
-    fn poll(
-        self: &'scope Self,
-        wake: &'scope dyn Wake<'scope>,
-    ) -> Poll<Self::Output> {
-        // # Safety
-        //
-        // Transmutes `&'scope dyn Wake` into a Waker.
-        // This is possible because Waker (internally just RawWaker) contains
-        // (*const (), &'static RawWakerVTable), and the fat ptr `&dyn Wake`
-        // internally is (*const (), *const WakeVTable).
-        //
-        // Using the resulting Waker is UB, which is why UnscopedFutureWrapper
-        // can only be used in pair with ScopedFutureWrapper, which transmutes
-        // the invalid `Waker` back to a `&dyn Wake`.
-        //
-        // This conversion is necessary to piggyback off rustc's expansion
-        // of `async` blocks into state machines implementing `Future`.
-        let waker: Waker =
-            unsafe { mem::transmute::<&'scope dyn Wake<'scope>, Waker>(wake) };
-        // # Safety
-        //
-        // Once any ScopedFuture is first polled and stores a waker, it becomes
-        // immutable and immovable because it has an immutable self reference.
-        //
-        // The Pin::new_unchecked is necessary to be compatible with
-        // `task::Future`
-        let pinned_future =
-            unsafe { Pin::new_unchecked(&mut *self.inner.get()) };
-
-        pinned_future.poll(&mut Context::from_waker(&waker))
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        unsafe { self.map_unchecked_mut(|this| &mut this.0).poll(cx) }
     }
 }
 
-impl<'scope, F: Future + 'scope> UnscopedFutureWrapper<'scope, F> {
-    pub unsafe fn from_future(f: F) -> Self {
-        Self {
-            inner: f.into(),
-            marker: PhantomData,
-        }
+impl<F: futures_core::Future> CustomFutureWrapper<F> {
+    pub unsafe fn from_custom_future(future: F) -> Self {
+        Self(future)
     }
 }

@@ -1,4 +1,4 @@
-use futures_core::{ScopedFuture, Wake};
+use futures_comp
 use futures_util::WakeStore;
 use futures_util::{MaybeDone, maybe_done};
 use std::{cell::Cell, task::Poll};
@@ -8,12 +8,12 @@ use std::{cell::Cell, task::Poll};
 ///
 /// Awaits multiple futures simultaneously, returning the output of the futures
 /// in the same container type they were created once all complete.
-pub trait Join<'scope> {
+pub trait Join {
     /// The resulting output type.
     type Output;
 
     /// The [`ScopedFuture`] implementation returned by this method.
-    type Future: ScopedFuture<'scope, Output = Self::Output>;
+    type Future: Future<Output = Self::Output>;
 
     /// Waits for multiple futures to complete.
     ///
@@ -27,14 +27,14 @@ pub trait Join<'scope> {
 pub trait JoinExt<'scope> {
     fn along_with<Fut>(self, other: Fut) -> Join2<'scope, Self, Fut>
     where
-        Self: Sized + ScopedFuture<'scope>,
-        Fut: ScopedFuture<'scope>,
+        Self: Sized + Future<'scope>,
+        Fut: Future<'scope>,
     {
         (self, other).join()
     }
 }
 
-impl<'scope, T> JoinExt<'scope> for T where T: ScopedFuture<'scope> {}
+impl<'scope, T> JoinExt<'scope> for T where T: Future<'scope> {}
 
 macro_rules! impl_join_tuple {
     ($namespace:ident $StructName:ident $($F:ident)+) => {
@@ -153,7 +153,7 @@ mod tests {
         let x1 = Cell::new(0);
         let x2 = Cell::new(0);
         let f1 = poll_fn(|wake| {
-            wake.wake();
+            wake.register();
             x1.set(x1.get() + 1);
             if x1.get() == 4 {
                 Poll::Ready(x1.get())
@@ -162,7 +162,7 @@ mod tests {
             }
         });
         let f2 = poll_fn(|wake| {
-            wake.wake();
+            wake.register();
             x2.set(x2.get() + 1);
             if x2.get() == 5 {
                 Poll::Ready(x2.get())

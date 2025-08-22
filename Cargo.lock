@@ -38,7 +38,6 @@ version = "0.0.2"
 dependencies = [
  "futures-combinators",
  "futures-compat",
- "futures-core",
  "futures-derive",
  "futures-util",
 ]
@@ -47,7 +46,6 @@ dependencies = [
 name = "futures-combinators"
 version = "0.0.2"
 dependencies = [
- "futures-core",
  "futures-util",
 ]
 
@@ -56,6 +54,7 @@ name = "futures-compat"
 version = "0.0.2"
 dependencies = [
  "futures-core",
+ "lifetime-guard",
 ]
 
 [[package]]
@@ -74,9 +73,6 @@ dependencies = [
 [[package]]
 name = "futures-util"
 version = "0.0.2"
-dependencies = [
- "futures-core",
-]
 
 [[package]]
 name = "generator"

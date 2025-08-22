@@ -10,3 +10,4 @@ homepage.workspace = true
 
 [dependencies]
 futures-core = { workspace = true }
+lifetime-guard = { workspace = true }
