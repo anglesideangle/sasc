@@ -74,7 +74,7 @@ macro_rules! impl_join_tuple {
                 // this is safe because futures_core::Future are isolated
                 // from core::future::Future impls and guaranteed to have
                 // their cx.wakers represented in the nonstandard format
-                unsafe { wake_array.register_parent(futures_compat::waker_to_guard(cx.waker())) }
+                wake_array.register_parent(unsafe { futures_compat::waker_to_guard(cx.waker()) });
 
                 let mut ready = true;
 
@@ -86,7 +86,7 @@ macro_rules! impl_join_tuple {
 
                     // ready if MaybeDone is Done or just completed (converted to Done)
                     // unsafe / against Future api contract to poll after Gone/Future is finished
-                    ready &= if unsafe { wake_array.take_woken(index).unwrap_unchecked() } {
+                    ready &= if unsafe { dbg!(wake_array.take_woken(index).unwrap_unchecked()) } {
                         $F.as_mut().poll(&mut child_cx).is_ready()
                     } else {
                         $F.is_terminated()
@@ -150,7 +150,7 @@ mod tests {
     use crate::wake::{DummyWaker, wake_bespoke_waker};
 
     use super::*;
-    use std::cell::Cell;
+
     use std::future::poll_fn;
     use std::pin;
     use std::ptr::NonNull;
@@ -189,7 +189,7 @@ mod tests {
             )
         }
         .join();
-        let mut pinned = unsafe { Pin::new_unchecked(&mut join) };
+        let mut pinned = pin::pin!(join);
         for _ in 0..4 {
             assert_eq!(pinned.as_mut().poll(&mut cx), Poll::Pending);
         }

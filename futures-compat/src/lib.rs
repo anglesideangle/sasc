@@ -2,6 +2,7 @@
 //! with an executor/reactor intended for bcsc::Future is strictly unsound.
 
 use std::{
+    mem::ManuallyDrop,
     pin::Pin,
     ptr::NonNull,
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
@@ -23,13 +24,15 @@ pub type WakePtr = Option<NonNull<dyn Wake>>;
 /// `core::future::Future`
 ///
 /// Any usage or storage of the resulting `Waker` is undefined behavior.
-pub unsafe fn guard_to_waker(guard: Pin<&ValueGuard<WakePtr>>) -> Waker {
-    unsafe {
+pub unsafe fn guard_to_waker(
+    guard: Pin<&ValueGuard<WakePtr>>,
+) -> ManuallyDrop<Waker> {
+    ManuallyDrop::new(unsafe {
         Waker::from_raw(RawWaker::new(
             guard.get_ref() as *const ValueGuard<WakePtr> as *const (),
             &EVIL_VTABLE,
         ))
-    }
+    })
 }
 pub unsafe fn atomic_guard_to_waker(
     guard: Pin<&AtomicValueGuard<WakePtr>>,
@@ -94,5 +97,33 @@ impl<F: futures_core::Future> core::future::Future for BespokeFutureWrapper<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe { self.map_unchecked_mut(|this| &mut this.0).poll(cx) }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::pin;
+
+    use super::*;
+    use futures_core::Wake;
+
+    #[derive(Debug)]
+    struct DummyWake;
+    impl Wake for DummyWake {
+        fn wake(&self) {}
+    }
+
+    #[test]
+    fn waker_conversion() {
+        let dummy = DummyWake;
+        let guard = pin::pin!(ValueGuard::new(NonNull::new(
+            &dummy as *const dyn Wake as *mut dyn Wake
+        )));
+        let waker = unsafe { guard_to_waker(guard.as_ref()) };
+        let guard = unsafe { waker_to_guard(&waker) };
+        assert_eq!(
+            guard.get().unwrap().as_ptr(),
+            &dummy as *const dyn Wake as *mut dyn Wake
+        );
     }
 }

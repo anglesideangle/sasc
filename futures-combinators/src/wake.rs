@@ -1,7 +1,4 @@
-use std::{
-    array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull,
-    task::Context,
-};
+use std::{array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
 
 use futures_compat::WakePtr;
 use futures_core::Wake;
@@ -11,7 +8,7 @@ pub struct WakeArray<const N: usize> {
     parent: RefGuard<WakePtr>,
     children: [ValueGuard<WakePtr>; N],
     stores: [WakeStore; N],
-    marker: PhantomPinned,
+    _marker: PhantomPinned,
 }
 
 impl<const N: usize> WakeArray<N> {
@@ -20,7 +17,7 @@ impl<const N: usize> WakeArray<N> {
             parent: RefGuard::new(),
             children: array::from_fn(|_| ValueGuard::new(None)),
             stores: array::from_fn(|_| WakeStore::new()),
-            marker: PhantomPinned,
+            _marker: PhantomPinned,
         }
     }
 
@@ -42,14 +39,17 @@ impl<const N: usize> WakeArray<N> {
             return None;
         }
 
+        let wake_store = unsafe { self.stores.get(index).unwrap_unchecked() };
+        wake_store.set_parent(&self.parent);
+
         let wake_store = unsafe {
-            NonNull::new_unchecked(self.stores.get(index).unwrap_unchecked()
-                as *const dyn Wake
-                as *mut dyn Wake)
+            NonNull::new_unchecked(
+                wake_store as *const dyn Wake as *mut dyn Wake,
+            )
         };
+
         let child_guard =
             unsafe { self.get_ref().children.get(index).unwrap_unchecked() };
-
         child_guard.set(Some(wake_store));
 
         Some(unsafe { Pin::new_unchecked(child_guard) })
@@ -69,7 +69,7 @@ impl WakeStore {
     pub fn new() -> Self {
         Self {
             wake_parent: Cell::new(None),
-            activated: Cell::new(false),
+            activated: Cell::new(true),
         }
     }
 
@@ -84,6 +84,7 @@ impl WakeStore {
 
 impl Wake for WakeStore {
     fn wake(&self) {
+        dbg!("awake?");
         self.activated.set(true);
         if let Some(parent) = self
             .wake_parent
@@ -109,5 +110,7 @@ pub unsafe fn wake_bespoke_waker(waker: &std::task::Waker) {
 pub struct DummyWaker;
 
 impl Wake for DummyWaker {
-    fn wake(&self) {}
+    fn wake(&self) {
+        dbg!("awake!");
+    }
 }
