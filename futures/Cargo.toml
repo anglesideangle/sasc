@@ -12,4 +12,3 @@ homepage.workspace = true
 futures-combinators = { workspace = true }
 futures-compat  = { workspace = true }
 futures-derive  = { workspace = true }
-futures-util  = { workspace = true }

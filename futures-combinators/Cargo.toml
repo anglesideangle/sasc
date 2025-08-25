@@ -9,4 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-futures-util = { workspace = true }
+futures-core = { workspace = true }
+futures-compat = { workspace = true }
+lifetime-guard = { workspace = true }
+futures = { workspace = true }

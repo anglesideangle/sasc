@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![no_std]
 
+// pub mod base;
 pub mod guard;
 
 #[cfg(feature = "atomics")]

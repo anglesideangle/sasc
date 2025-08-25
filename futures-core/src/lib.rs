@@ -123,3 +123,8 @@ where
         <P::Target as Future>::poll(self.as_deref_mut(), cx)
     }
 }
+
+/// temporary trait until Fn::call is stabilized
+pub trait Wake {
+    fn wake(&self);
+}

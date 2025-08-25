@@ -3,10 +3,12 @@
 
 use std::{
     pin::Pin,
+    ptr::NonNull,
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-use lifetime_guard::atomic_guard::AtomicValueGuard;
+use futures_core::Wake;
+use lifetime_guard::{atomic_guard::AtomicValueGuard, guard::ValueGuard};
 
 static EVIL_VTABLE: RawWakerVTable = RawWakerVTable::new(
     |_| panic!("wtf"),
@@ -15,14 +17,26 @@ static EVIL_VTABLE: RawWakerVTable = RawWakerVTable::new(
     |_| panic!("wtf"),
 );
 
-/// Coerces a pinned `AtomicValueGuard` reference to a `Waker` for use in
+pub type WakePtr = Option<NonNull<dyn Wake>>;
+
+/// Coerces a pinned `ValueGuard` reference to a `Waker` for use in
 /// `core::future::Future`
 ///
 /// Any usage or storage of the resulting `Waker` is undefined behavior.
-pub unsafe fn guard_to_waker(guard: Pin<&AtomicValueGuard<fn()>>) -> Waker {
+pub unsafe fn guard_to_waker(guard: Pin<&ValueGuard<WakePtr>>) -> Waker {
     unsafe {
         Waker::from_raw(RawWaker::new(
-            guard.get_ref() as *const AtomicValueGuard<fn()> as *const (),
+            guard.get_ref() as *const ValueGuard<WakePtr> as *const (),
+            &EVIL_VTABLE,
+        ))
+    }
+}
+pub unsafe fn atomic_guard_to_waker(
+    guard: Pin<&AtomicValueGuard<WakePtr>>,
+) -> Waker {
+    unsafe {
+        Waker::from_raw(RawWaker::new(
+            guard.get_ref() as *const AtomicValueGuard<WakePtr> as *const (),
             &EVIL_VTABLE,
         ))
     }
@@ -32,11 +46,31 @@ pub unsafe fn guard_to_waker(guard: Pin<&AtomicValueGuard<fn()>>) -> Waker {
 ///
 /// This should only be used to undo the work of `guard_to_waker`.
 pub unsafe fn waker_to_guard<'a>(
-    waker: Waker,
-) -> Pin<&'a AtomicValueGuard<fn()>> {
+    waker: &Waker,
+) -> Pin<&'a ValueGuard<WakePtr>> {
     unsafe {
-        Pin::new_unchecked(&*(waker.data() as *const AtomicValueGuard<fn()>))
+        Pin::new_unchecked(&*(waker.data() as *const ValueGuard<WakePtr>))
     }
+}
+pub unsafe fn waker_to_atomic_guard<'a>(
+    waker: &Waker,
+) -> Pin<&'a AtomicValueGuard<WakePtr>> {
+    unsafe {
+        Pin::new_unchecked(&*(waker.data() as *const AtomicValueGuard<WakePtr>))
+    }
+}
+
+// TODO should probably return impl futures_core::Future, same for next fn
+pub unsafe fn std_future_to_bespoke<F: core::future::Future>(
+    future: F,
+) -> NormalFutureWrapper<F> {
+    NormalFutureWrapper(future)
+}
+
+pub unsafe fn bespoke_future_to_std<F: futures_core::Future>(
+    future: F,
+) -> BespokeFutureWrapper<F> {
+    BespokeFutureWrapper(future)
 }
 
 /// wraps `core::future::Future` in impl of `bcsc:Future`
@@ -51,26 +85,14 @@ impl<F: core::future::Future> futures_core::Future for NormalFutureWrapper<F> {
     }
 }
 
-impl<F: core::future::Future> NormalFutureWrapper<F> {
-    pub unsafe fn from_std_future(future: F) -> Self {
-        Self(future)
-    }
-}
-
 /// wraps custom `bcsc::Future` in impl of `core::future::Future`
 #[repr(transparent)]
-pub struct CustomFutureWrapper<F: futures_core::Future>(F);
+pub struct BespokeFutureWrapper<F: futures_core::Future>(F);
 
-impl<F: futures_core::Future> core::future::Future for CustomFutureWrapper<F> {
+impl<F: futures_core::Future> core::future::Future for BespokeFutureWrapper<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         unsafe { self.map_unchecked_mut(|this| &mut this.0).poll(cx) }
-    }
-}
-
-impl<F: futures_core::Future> CustomFutureWrapper<F> {
-    pub unsafe fn from_custom_future(future: F) -> Self {
-        Self(future)
     }
 }
