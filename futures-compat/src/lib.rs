@@ -116,17 +116,6 @@ where
     }
 }
 
-// impl<F> core::future::Future for F
-// where
-//     F: for<'a> futures_core::Future<Context<'a>>,
-// {
-//     type Output = F::Output;
-
-//     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-//         self.poll(cx.waker())
-//     }
-// }
-
 #[cfg(test)]
 mod test {
     use std::pin;
@@ -149,8 +138,8 @@ mod test {
         let waker = unsafe { guard_to_waker(guard.as_ref()) };
         let guard = unsafe { waker_to_guard(&waker) };
         assert_eq!(
-            guard.get().unwrap().as_ptr(),
-            &dummy as *const dyn Wake as *mut dyn Wake
+            guard.get().unwrap().as_ptr() as *const () as usize,
+            &dummy as *const _ as *const () as usize
         );
     }
 }

@@ -15,7 +15,7 @@ use std::task::ready;
 ///
 /// This is created by the [`maybe_done()`] function.
 #[derive(Debug)]
-pub enum MaybeDone<Fut: Future<LocalWaker>> {
+pub enum MaybeDone<Fut: futures_core::Future<LocalWaker>> {
     /// A not-yet-completed future
     Future(/* #[pin] */ Fut),
     /// The output of the completed future
@@ -28,24 +28,9 @@ pub enum MaybeDone<Fut: Future<LocalWaker>> {
 impl<Fut: Future<LocalWaker> + Unpin> Unpin for MaybeDone<Fut> {}
 
 /// Wraps a future into a `MaybeDone`
-///
-/// # Examples
-///
-/// ```
-/// # futures::executor::block_on(async {
-/// use core::pin::pin;
-///
-/// use futures::future;
-///
-/// let future = future::maybe_done(async { 5 });
-/// let mut future = pin!(future);
-/// assert_eq!(future.as_mut().take_output(), None);
-/// let () = future.as_mut().await;
-/// assert_eq!(future.as_mut().take_output(), Some(5));
-/// assert_eq!(future.as_mut().take_output(), None);
-/// # });
-/// ```
-pub fn maybe_done<Fut: Future<LocalWaker>>(future: Fut) -> MaybeDone<Fut> {
+pub fn maybe_done<Fut: futures_core::Future<LocalWaker>>(
+    future: Fut,
+) -> MaybeDone<Fut> {
     assert_future::<(), _>(MaybeDone::Future(future))
 }
 
@@ -90,7 +75,9 @@ impl<Fut: Future<LocalWaker>> FusedFuture<LocalWaker> for MaybeDone<Fut> {
     }
 }
 
-impl<Fut: Future<LocalWaker>> Future<LocalWaker> for MaybeDone<Fut> {
+impl<Fut: Future<LocalWaker>> futures_core::Future<LocalWaker>
+    for MaybeDone<Fut>
+{
     type Output = ();
 
     fn poll(

@@ -138,8 +138,9 @@ mod tests {
     #![no_std]
 
     use futures_core::Future;
+    use futures_util::{dummy_guard, poll_fn};
 
-    use crate::wake::{dummy_guard, local_wake, poll_fn};
+    use crate::wake::local_wake;
 
     use super::*;
 

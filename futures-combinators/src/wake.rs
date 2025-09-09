@@ -1,7 +1,4 @@
-use std::{
-    array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull,
-    task::Poll,
-};
+use std::{array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
 
 use futures_compat::{LocalWaker, WakePtr};
 use futures_core::Wake;
@@ -115,40 +112,3 @@ pub fn local_wake(guard: &LocalWaker) {
 //         }
 //     }
 // }
-
-pub struct PollFn<F, T>(F)
-where
-    F: FnMut(&LocalWaker) -> Poll<T>;
-
-impl<F, T> futures_core::Future<LocalWaker> for PollFn<F, T>
-where
-    F: FnMut(&LocalWaker) -> Poll<T>,
-{
-    type Output = T;
-
-    fn poll(
-        self: Pin<&mut Self>,
-        waker: Pin<&LocalWaker>,
-    ) -> Poll<Self::Output> {
-        (unsafe { &mut self.get_unchecked_mut().0 })(&waker)
-    }
-}
-
-pub fn poll_fn<F, T>(f: F) -> impl futures_core::Future<LocalWaker, Output = T>
-where
-    F: FnMut(&LocalWaker) -> Poll<T>,
-{
-    PollFn(f)
-}
-
-pub struct DummyWaker;
-
-impl Wake for DummyWaker {
-    fn wake(&self) {
-        dbg!("awake!");
-    }
-}
-
-pub fn dummy_guard() -> ValueGuard<WakePtr> {
-    ValueGuard::new(NonNull::new(&mut DummyWaker as *mut dyn Wake))
-}

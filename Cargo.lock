@@ -38,6 +38,7 @@ version = "0.0.2"
 dependencies = [
  "futures-combinators",
  "futures-compat",
+ "futures-core",
  "futures-derive",
 ]
 
