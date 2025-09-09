@@ -148,3 +148,7 @@ impl Wake for DummyWaker {
         dbg!("awake!");
     }
 }
+
+pub fn dummy_guard() -> ValueGuard<WakePtr> {
+    ValueGuard::new(NonNull::new(&mut DummyWaker as *mut dyn Wake))
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "futures", "futures-combinators", "futures-compat", "futures-core", "futures-derive", "lifetime-guard"]
+members = [ "futures", "futures-combinators", "futures-compat", "futures-core", "futures-derive", "futures-util", "lifetime-guard"]
 
 [workspace.package]
 version = "0.0.2"
@@ -17,6 +17,5 @@ futures-combinators = { path = "futures-combinators", version = "0.0.2" }
 futures-compat = { path = "futures-compat", version = "0.0.2" }
 futures-core = { path = "futures-core", version = "0.0.2" }
 futures-derive = { path = "futures-derive", version = "0.0.2" }
+futures-util = { path = "futures-util", version = "0.0.2" }
 lifetime-guard = { path = "lifetime-guard", version = "0.0.2" }
-# TODO probably vendor in
-futures = "0.3"

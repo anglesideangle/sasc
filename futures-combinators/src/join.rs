@@ -137,15 +137,13 @@ impl_join_tuple!(join12 Join12 A B C D E F G H I J K L);
 mod tests {
     #![no_std]
 
-    use futures_core::{Future, Wake};
-    use lifetime_guard::guard::ValueGuard;
+    use futures_core::Future;
 
-    use crate::wake::{DummyWaker, local_wake, poll_fn};
+    use crate::wake::{dummy_guard, local_wake, poll_fn};
 
     use super::*;
 
     use std::pin;
-    use std::ptr::NonNull;
 
     #[test]
     fn counters() {
@@ -169,33 +167,31 @@ mod tests {
                 Poll::Pending
             }
         });
-        let guard = pin::pin!(ValueGuard::new(NonNull::new(
-            &mut DummyWaker as *mut dyn Wake,
-        )));
-        let join = (f1, f2).join();
-        let mut pinned = pin::pin!(join);
+        let guard = pin::pin!(dummy_guard());
+        let mut join = pin::pin!((f1, f2).join());
         for _ in 0..4 {
-            assert_eq!(pinned.as_mut().poll(guard.as_ref()), Poll::Pending);
+            assert_eq!(join.as_mut().poll(guard.as_ref()), Poll::Pending);
         }
-        assert_eq!(pinned.poll(guard.as_ref()), Poll::Ready((4, 5)));
+        assert_eq!(join.poll(guard.as_ref()), Poll::Ready((4, 5)));
     }
 
-    // #[test]
-    // fn never_wake() {
-    //     let f1 = poll_fn(|_| Poll::<i32>::Pending);
-    //     let f2 = poll_fn(|_| Poll::<i32>::Pending);
-    //     let dummy_waker = noop_wake();
-    //     let join = (f1, f2).join();
-    //     for _ in 0..10 {
-    //         assert_eq!(join.poll(&dummy_waker), Poll::Pending);
-    //     }
-    // }
+    #[test]
+    fn never_wake() {
+        let f1 = poll_fn(|_| Poll::<i32>::Ready(0));
+        let f2 = poll_fn(|_| Poll::<i32>::Pending);
+        let guard = pin::pin!(dummy_guard());
+        let mut join = pin::pin!((f1, f2).join());
+        for _ in 0..10 {
+            assert_eq!(join.as_mut().poll(guard.as_ref()), Poll::Pending);
+        }
+    }
 
-    // #[test]
-    // fn basic() {
-    //     let f1 = poll_fn(|_| Poll::Ready(1));
-    //     let f2 = poll_fn(|_| Poll::Ready(2));
-    //     let dummy_waker = noop_wake();
-    //     assert_eq!(f1.along_with(f2).poll(&dummy_waker), Poll::Ready((1, 2)));
-    // }
+    #[test]
+    fn immediate() {
+        let f1 = poll_fn(|_| Poll::Ready(1));
+        let f2 = poll_fn(|_| Poll::Ready(2));
+        let join = pin::pin!(f1.along_with(f2));
+        let guard = pin::pin!(dummy_guard());
+        assert_eq!(join.poll(guard.as_ref()), Poll::Ready((1, 2)));
+    }
 }
