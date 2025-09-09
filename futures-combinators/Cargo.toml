@@ -11,5 +11,5 @@ homepage.workspace = true
 [dependencies]
 futures-core = { workspace = true }
 futures-compat = { workspace = true }
+futures-util = { workspace = true }
 lifetime-guard = { workspace = true }
-futures = { workspace = true }

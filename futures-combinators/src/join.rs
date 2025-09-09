@@ -1,10 +1,9 @@
 use crate::wake::WakeArray;
-use futures::future::FusedFuture;
-use futures::future::MaybeDone;
-use futures::future::maybe_done;
-use futures_compat::BespokeFutureWrapper;
+use futures_compat::LocalWaker;
+use futures_core::FusedFuture;
+use futures_util::maybe_done::MaybeDone;
+use futures_util::maybe_done::maybe_done;
 use std::pin::Pin;
-use std::task::Context;
 use std::task::Poll;
 
 /// from [futures-concurrency](https://github.com/yoshuawuyts/futures-concurrency/tree/main)
@@ -17,7 +16,7 @@ pub trait Join {
     type Output;
 
     /// The [`ScopedFuture`] implementation returned by this method.
-    type Future: futures_core::Future<Output = Self::Output>;
+    type Future: futures_core::Future<LocalWaker, Output = Self::Output>;
 
     /// Waits for multiple futures to complete.
     ///
@@ -31,14 +30,14 @@ pub trait Join {
 pub trait JoinExt {
     fn along_with<Fut>(self, other: Fut) -> Join2<Self, Fut>
     where
-        Self: Sized + futures_core::Future,
-        Fut: futures_core::Future,
+        Self: Sized + futures_core::Future<LocalWaker>,
+        Fut: futures_core::Future<LocalWaker>,
     {
         (self, other).join()
     }
 }
 
-impl<T> JoinExt for T where T: futures_core::Future {}
+impl<T> JoinExt for T where T: futures_core::Future<LocalWaker> {}
 
 macro_rules! impl_join_tuple {
     ($namespace:ident $StructName:ident $($F:ident)+) => {
@@ -50,17 +49,17 @@ macro_rules! impl_join_tuple {
 
         #[allow(non_snake_case)]
         #[must_use = "futures do nothing unless you `.await` or poll them"]
-        pub struct $StructName<$($F: futures_core::Future),+> {
-            $($F: MaybeDone<BespokeFutureWrapper<$F>>,)*
+        pub struct $StructName<$($F: futures_core::Future<LocalWaker>),+> {
+            $($F: MaybeDone<$F>,)*
             wake_array: WakeArray<{$namespace::LEN}>,
         }
 
-        impl<$($F: futures_core::Future),+> futures_core::Future for $StructName<$($F),+>
+        impl<$($F: futures_core::Future<LocalWaker>),+> futures_core::Future<LocalWaker> for $StructName<$($F),+>
         {
             type Output = ($($F::Output),+);
 
             #[allow(non_snake_case)]
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            fn poll(self: Pin<&mut Self>, waker: Pin<&LocalWaker>) -> Poll<Self::Output> {
                 let this = unsafe { self.get_unchecked_mut() };
 
                 let wake_array = unsafe { Pin::new_unchecked(&this.wake_array) };
@@ -70,24 +69,18 @@ macro_rules! impl_join_tuple {
                     let mut $F = unsafe { Pin::new_unchecked(&mut this.$F) };
                 )+
 
-                // extract reference to ValueGuard from Context
-                // this is safe because futures_core::Future are isolated
-                // from core::future::Future impls and guaranteed to have
-                // their cx.wakers represented in the nonstandard format
-                wake_array.register_parent(unsafe { futures_compat::waker_to_guard(cx.waker()) });
+                wake_array.register_parent(waker);
 
                 let mut ready = true;
 
                 $(
                     let index = $namespace::Indexes::$F as usize;
-                    // cx to feed children
-                    let waker = unsafe { futures_compat::guard_to_waker(wake_array.child_guard_ptr(index).unwrap_unchecked()) };
-                    let mut child_cx = Context::from_waker(&waker);
+                    let waker = unsafe { wake_array.child_guard_ptr(index).unwrap_unchecked() };
 
                     // ready if MaybeDone is Done or just completed (converted to Done)
                     // unsafe / against Future api contract to poll after Gone/Future is finished
                     ready &= if unsafe { dbg!(wake_array.take_woken(index).unwrap_unchecked()) } {
-                        $F.as_mut().poll(&mut child_cx).is_ready()
+                        $F.as_mut().poll(waker).is_ready()
                     } else {
                         $F.is_terminated()
                     };
@@ -111,7 +104,7 @@ macro_rules! impl_join_tuple {
             }
         }
 
-        impl<$($F: futures_core::Future),+> Join for ($($F),+) {
+        impl<$($F: futures_core::Future<LocalWaker>),+> Join for ($($F),+) {
             type Output = ($($F::Output),*);
             type Future = $StructName<$($F),+>;
 
@@ -120,7 +113,7 @@ macro_rules! impl_join_tuple {
                 let ($($F),+) = self;
 
                 $StructName {
-                    $($F: maybe_done(unsafe { futures_compat::bespoke_future_to_std($F) }),)*
+                    $($F: maybe_done($F),)*
                     wake_array: WakeArray::new(),
                 }
             }
@@ -147,11 +140,10 @@ mod tests {
     use futures_core::{Future, Wake};
     use lifetime_guard::guard::ValueGuard;
 
-    use crate::wake::{DummyWaker, wake_bespoke_waker};
+    use crate::wake::{DummyWaker, local_wake, poll_fn};
 
     use super::*;
 
-    use std::future::poll_fn;
     use std::pin;
     use std::ptr::NonNull;
 
@@ -159,8 +151,8 @@ mod tests {
     fn counters() {
         let mut x1 = 0;
         let mut x2 = 0;
-        let f1 = poll_fn(|cx| {
-            unsafe { wake_bespoke_waker(cx.waker()) };
+        let f1 = poll_fn(|waker| {
+            local_wake(waker);
             x1 += 1;
             if x1 == 4 {
                 Poll::Ready(x1)
@@ -168,8 +160,8 @@ mod tests {
                 Poll::Pending
             }
         });
-        let f2 = poll_fn(|cx| {
-            unsafe { wake_bespoke_waker(cx.waker()) };
+        let f2 = poll_fn(|waker| {
+            local_wake(waker);
             x2 += 1;
             if x2 == 5 {
                 Poll::Ready(x2)
@@ -180,20 +172,12 @@ mod tests {
         let guard = pin::pin!(ValueGuard::new(NonNull::new(
             &mut DummyWaker as *mut dyn Wake,
         )));
-        let waker = unsafe { futures_compat::guard_to_waker(guard.as_ref()) };
-        let mut cx = Context::from_waker(&waker);
-        let mut join = unsafe {
-            (
-                futures_compat::std_future_to_bespoke(f1),
-                futures_compat::std_future_to_bespoke(f2),
-            )
-        }
-        .join();
+        let join = (f1, f2).join();
         let mut pinned = pin::pin!(join);
         for _ in 0..4 {
-            assert_eq!(pinned.as_mut().poll(&mut cx), Poll::Pending);
+            assert_eq!(pinned.as_mut().poll(guard.as_ref()), Poll::Pending);
         }
-        assert_eq!(pinned.poll(&mut cx), Poll::Ready((4, 5)));
+        assert_eq!(pinned.poll(guard.as_ref()), Poll::Ready((4, 5)));
     }
 
     // #[test]

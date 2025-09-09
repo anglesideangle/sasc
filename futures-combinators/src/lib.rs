@@ -1,6 +1,6 @@
 pub mod join;
-// pub mod race;
+pub mod race;
 mod wake;
 
 use join::*;
-// use race::*;
+use race::*;

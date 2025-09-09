@@ -1,6 +1,9 @@
-use std::{array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull};
+use std::{
+    array, cell::Cell, marker::PhantomPinned, pin::Pin, ptr::NonNull,
+    task::Poll,
+};
 
-use futures_compat::WakePtr;
+use futures_compat::{LocalWaker, WakePtr};
 use futures_core::Wake;
 use lifetime_guard::{guard::RefGuard, guard::ValueGuard};
 
@@ -98,13 +101,44 @@ impl Wake for WakeStore {
     }
 }
 
-pub unsafe fn wake_bespoke_waker(waker: &std::task::Waker) {
-    unsafe {
-        let guard = futures_compat::waker_to_guard(waker);
-        if let Some(wake) = guard.get() {
-            (*wake.as_ptr()).wake();
-        }
+pub fn local_wake(guard: &LocalWaker) {
+    if let Some(wake) = guard.get() {
+        unsafe { (*wake.as_ptr()).wake() }
     }
+}
+
+// pub unsafe fn wake_bespoke_waker(waker: &std::task::Waker) {
+//     unsafe {
+//         let guard = futures_compat::waker_to_guard(waker);
+//         if let Some(wake) = guard.get() {
+//             (*wake.as_ptr()).wake();
+//         }
+//     }
+// }
+
+pub struct PollFn<F, T>(F)
+where
+    F: FnMut(&LocalWaker) -> Poll<T>;
+
+impl<F, T> futures_core::Future<LocalWaker> for PollFn<F, T>
+where
+    F: FnMut(&LocalWaker) -> Poll<T>,
+{
+    type Output = T;
+
+    fn poll(
+        self: Pin<&mut Self>,
+        waker: Pin<&LocalWaker>,
+    ) -> Poll<Self::Output> {
+        (unsafe { &mut self.get_unchecked_mut().0 })(&waker)
+    }
+}
+
+pub fn poll_fn<F, T>(f: F) -> impl futures_core::Future<LocalWaker, Output = T>
+where
+    F: FnMut(&LocalWaker) -> Poll<T>,
+{
+    PollFn(f)
 }
 
 pub struct DummyWaker;
